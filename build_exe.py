@@ -29,12 +29,29 @@ def main():
     print("Building .exe ...")
     print("This may take a minute on first run.\n")
 
+    # Locate Tcl/Tk data directories so PyInstaller bundles them correctly.
+    # Without these the .exe crashes with "Tcl data directory ... not found".
+    import tkinter
+    import os
+
+    tcl_tk_data = []
+    # Python embeds tcl/tk under its install prefix (e.g. Python312/tcl/tcl8.6)
+    python_dir = Path(sys.executable).parent
+    for candidate_parent in [python_dir / "tcl", python_dir / "lib", Path(sys.prefix) / "tcl"]:
+        if not candidate_parent.is_dir():
+            continue
+        for child in candidate_parent.iterdir():
+            if child.is_dir() and child.name.startswith(("tcl", "tk")):
+                tcl_tk_data += ["--add-data", f"{child};{child.name}"]
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name", "LeadEngine",
         "--windowed",                  # no terminal window — proper GUI app
         "--noconfirm",                 # overwrite previous build without asking
         "--add-data", "lead_engine;lead_engine",  # bundle the package
+        *tcl_tk_data,
+        "--collect-all", "tkinter",
         "--hidden-import", "anthropic",
         "--hidden-import", "httpx",
         "--hidden-import", "bs4",
