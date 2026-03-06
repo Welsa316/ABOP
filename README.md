@@ -11,7 +11,34 @@ A local Python tool that takes a CSV export of businesses (from Google Maps / Ap
 5. **Generates** three tailored outreach messages per lead (email, contact form, DM) using the Claude API
 6. **Outputs** enriched CSVs, a ranked CSV, high-priority CSV, full JSON, and a text summary report
 
-## Quick Start (Windows)
+## Option A: Run as a .exe (easiest)
+
+No Python knowledge needed after the initial build.
+
+### One-time build
+
+1. Install Python 3.11+ from [python.org](https://www.python.org/downloads/) (check **"Add Python to PATH"**)
+2. Open a terminal in this project folder and run:
+   ```
+   pip install -r requirements.txt
+   python build_exe.py
+   ```
+3. This creates a `dist/LeadEngine/` folder with `LeadEngine.exe` inside
+
+### Using the .exe
+
+1. Copy the entire `dist/LeadEngine/` folder wherever you want (Desktop, etc.)
+2. Drop your CSV file into that folder
+3. Double-click **LeadEngine.exe**
+4. On first run, it will ask for your Anthropic API key — paste it and press Enter
+5. The key is saved automatically in a `.env` file next to the .exe, so you only do this once
+6. Pick your CSV file from the menu, and it runs
+
+Output files appear in an `output/` folder next to the .exe.
+
+---
+
+## Option B: Run as a Python script
 
 ### 1. Install Python
 
@@ -24,46 +51,28 @@ git clone https://github.com/Welsa316/Automatic-Business-Outreach-Program.git
 cd Automatic-Business-Outreach-Program
 ```
 
-### 3. Create a virtual environment (recommended)
-
-```
-python -m venv venv
-venv\Scripts\activate
-```
-
-### 4. Install dependencies
+### 3. Install dependencies
 
 ```
 pip install -r requirements.txt
 ```
 
-### 5. Set your Anthropic API key
+### 4. Run the tool
 
-Copy `.env.example` to `.env` and add your key:
+```
+python run.py
+```
+
+On first run, it will ask for your Anthropic API key and save it automatically. Or you can set it manually:
 
 ```
 copy .env.example .env
 ```
+Then edit `.env` and paste your key.
 
-Then edit `.env`:
+You can also pass a CSV file directly:
 ```
-ANTHROPIC_API_KEY=sk-ant-api03-your-actual-key-here
-```
-
-Or set it as an environment variable:
-```
-set ANTHROPIC_API_KEY=sk-ant-api03-your-actual-key-here
-```
-
-### 6. Run the tool
-
-```
-python run.py --csv dataset_crawler-google-places_2026-03-06_02-35-38-805.csv
-```
-
-Or just run it interactively (it will find CSV files in the current directory):
-```
-python run.py
+python run.py --csv your-businesses.csv
 ```
 
 ## CLI Options
@@ -146,6 +155,7 @@ All weights are configurable in `lead_engine/config.py`.
 ```
 Automatic-Business-Outreach-Program/
 ├── run.py                  # Main entry point (CLI)
+├── build_exe.py            # One-click .exe builder
 ├── requirements.txt        # Python dependencies
 ├── .env.example            # API key template
 ├── .gitignore

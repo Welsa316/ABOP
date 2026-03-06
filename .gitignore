@@ -6,6 +6,11 @@ __pycache__/
 # Output (optional — remove this line if you want to commit outputs)
 output/
 
+# PyInstaller build artifacts
+build/
+dist/
+*.spec
+
 # IDE
 .vscode/
 .idea/

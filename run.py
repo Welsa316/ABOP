@@ -11,21 +11,32 @@ Usage:
 
 import argparse
 import asyncio
+import os
 import sys
 import time
 import json
 from pathlib import Path
 
-# Load .env file if present (must happen before config import reads env vars)
+# ---------------------------------------------------------------------------
+# Resolve base directory — works both as .py script and as frozen .exe
+# ---------------------------------------------------------------------------
+if getattr(sys, "frozen", False):
+    # Running as PyInstaller .exe — base dir is where the .exe lives
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
+
+# Load .env file from the same folder as the script / .exe
+_env_path = BASE_DIR / ".env"
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(_env_path)
 except ImportError:
     pass  # python-dotenv is optional but recommended
 
 from lead_engine import config
 # Re-read API key after dotenv has loaded
-config.ANTHROPIC_API_KEY = __import__("os").getenv("ANTHROPIC_API_KEY", "")
+config.ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 from lead_engine.utils import setup_logging, save_json
 from lead_engine.loader import load_csv
 from lead_engine.analyzer import analyze_websites
@@ -37,6 +48,55 @@ import logging
 logger = logging.getLogger("lead_engine")
 
 PROGRESS_FILE = "output/.progress.json"
+
+
+def _ensure_api_key() -> None:
+    """
+    If ANTHROPIC_API_KEY is not set, prompt the user and save it to .env
+    so they never have to enter it again.
+    """
+    if config.ANTHROPIC_API_KEY:
+        return  # already set
+
+    print("\n" + "=" * 55)
+    print("  First-time setup: Claude API key needed")
+    print("=" * 55)
+    print()
+    print("To generate outreach messages, this tool needs an")
+    print("Anthropic API key. You can get one at:")
+    print("  https://console.anthropic.com/settings/keys")
+    print()
+    print("Your key will be saved locally in a .env file")
+    print(f"  ({_env_path})")
+    print("so you only have to do this once.")
+    print()
+
+    key = input("Paste your API key (or press Enter to skip): ").strip()
+    if not key:
+        print("Skipping — AI messages will be disabled this run.\n")
+        return
+
+    # Save to .env
+    config.ANTHROPIC_API_KEY = key
+    os.environ["ANTHROPIC_API_KEY"] = key
+
+    # Write / append to .env file
+    env_lines = []
+    if _env_path.exists():
+        env_lines = _env_path.read_text(encoding="utf-8").splitlines()
+
+    # Replace existing key line or append
+    found = False
+    for i, line in enumerate(env_lines):
+        if line.strip().startswith("ANTHROPIC_API_KEY"):
+            env_lines[i] = f"ANTHROPIC_API_KEY={key}"
+            found = True
+            break
+    if not found:
+        env_lines.append(f"ANTHROPIC_API_KEY={key}")
+
+    _env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+    print(f"Saved to {_env_path}\n")
 
 
 def _save_progress(businesses: list[dict], stage: str) -> None:
@@ -91,8 +151,8 @@ def interactive_csv_prompt() -> str:
     """If no --csv flag, prompt the user for a file path."""
     print("\n=== Lead Scoring & Outreach Generator ===\n")
 
-    # Auto-detect CSV files in current directory
-    csvs = sorted(Path(".").glob("*.csv"))
+    # Auto-detect CSV files in the app directory (works from .exe too)
+    csvs = sorted(BASE_DIR.glob("*.csv"))
     if csvs:
         print("CSV files found in current directory:")
         for i, f in enumerate(csvs, 1):
@@ -177,9 +237,11 @@ def main() -> None:
             biz["dm_message"] = ""
             biz["message_error"] = "skipped"
     else:
+        # Prompt for key if missing (first-time setup)
+        _ensure_api_key()
+
         if not config.ANTHROPIC_API_KEY:
-            print("\n[4/4] WARNING: ANTHROPIC_API_KEY not set. Skipping messages.")
-            print("      Set it with:  set ANTHROPIC_API_KEY=sk-ant-...")
+            print("\n[4/4] No API key — skipping AI message generation.")
             for biz in businesses:
                 biz["email_message"] = ""
                 biz["contact_form_message"] = ""
@@ -208,4 +270,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nCancelled.")
+    except Exception as exc:
+        print(f"\nError: {exc}")
+        logging.exception("Unhandled error")
+    finally:
+        # Keep the window open when running as .exe
+        if getattr(sys, "frozen", False):
+            input("\nPress Enter to close...")
