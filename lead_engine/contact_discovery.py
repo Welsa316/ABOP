@@ -419,12 +419,18 @@ def discover_contacts(biz: dict) -> ContactInfo:
     return info
 
 
-def discover_all_contacts(businesses: list[dict]) -> dict[int, ContactInfo]:
+def discover_all_contacts(
+    businesses: list[dict],
+    progress_callback=None,
+) -> dict[int, ContactInfo]:
     """
     Run contact discovery for every business in the list.
 
     Returns a dict mapping business index → ContactInfo.
     Includes rate limiting between businesses.
+
+    If *progress_callback* is provided it is called after each business as
+    ``progress_callback(current_index, total, business_name, contact_info)``.
     """
     total = len(businesses)
     results: dict[int, ContactInfo] = {}
@@ -451,9 +457,14 @@ def discover_all_contacts(businesses: list[dict]) -> dict[int, ContactInfo]:
             summary = ", ".join(parts) if parts else "none"
             logger.info("  → Found %d contacts: %s", methods, summary)
 
+            if progress_callback:
+                progress_callback(i, total, name, info)
+
         except Exception as exc:
             logger.error("  → Error discovering contacts for %s: %s", name, exc)
             results[i] = ContactInfo()
+            if progress_callback:
+                progress_callback(i, total, name, results[i])
 
     found_any = sum(1 for c in results.values() if c.contact_methods_found > 0)
     logger.info("Contact discovery complete: %d/%d businesses have contacts",

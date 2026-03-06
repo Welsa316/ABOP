@@ -431,7 +431,25 @@ class LeadEngineApp:
                 self._set_progress(25, "Discovering contacts ...")
                 self._log("[3/5] Discovering contacts (social media, emails) ...")
                 self._log("      This searches for each business — may take a few minutes.")
-                contacts = discover_all_contacts(businesses)
+
+                def _contact_progress(idx, total, name, info):
+                    pct = 25 + int((idx + 1) / total * 25)  # 25% → 50%
+                    parts = []
+                    if info.instagram:
+                        parts.append("IG")
+                    if info.facebook:
+                        parts.append("FB")
+                    if info.tiktok:
+                        parts.append("TT")
+                    if info.yelp:
+                        parts.append("Yelp")
+                    if info.email:
+                        parts.append("Email")
+                    found = ", ".join(parts) if parts else "none"
+                    self._set_progress(pct, f"Contacts: {idx+1}/{total}")
+                    self._log(f"      [{idx+1}/{total}] {name} → {found}")
+
+                contacts = discover_all_contacts(businesses, progress_callback=_contact_progress)
                 for i, biz in enumerate(businesses):
                     info = contacts.get(i)
                     if info:
