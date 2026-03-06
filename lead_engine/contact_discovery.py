@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass, field
 from urllib.parse import urlparse, unquote
 
-import requests
+import httpx
 from bs4 import BeautifulSoup
 
 from . import config
@@ -80,9 +80,8 @@ _JUNK_EMAIL_DOMAINS = {
     "instagram.com", "tiktok.com", "yelp.com", "apple.com",
 }
 
-# Session for connection reuse
-_SESSION = requests.Session()
-_SESSION.headers.update({
+# HTTP headers for search requests
+_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -90,7 +89,23 @@ _SESSION.headers.update({
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-})
+}
+
+# Reusable httpx client (created lazily to avoid import-time side effects)
+_client: httpx.Client | None = None
+
+
+def _get_client() -> httpx.Client:
+    """Return a shared httpx client, creating it on first use."""
+    global _client
+    if _client is None:
+        _client = httpx.Client(
+            headers=_HEADERS,
+            follow_redirects=True,
+            verify=False,
+            timeout=config.CONTACT_DISCOVERY_TIMEOUT,
+        )
+    return _client
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +121,10 @@ def _ddg_search(query: str, max_results: int = 8) -> list[dict]:
     """
     url = "https://html.duckduckgo.com/html/"
     try:
-        resp = _SESSION.post(
-            url,
-            data={"q": query, "b": ""},
-            timeout=config.CONTACT_DISCOVERY_TIMEOUT,
-        )
+        client = _get_client()
+        resp = client.post(url, data={"q": query, "b": ""})
         resp.raise_for_status()
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         logger.warning("Search failed for %r: %s", query, exc)
         return []
 
@@ -334,13 +346,10 @@ def _check_google_listing(google_url: str) -> dict:
         return {}
 
     try:
-        resp = _SESSION.get(
-            google_url,
-            timeout=config.CONTACT_DISCOVERY_TIMEOUT,
-            allow_redirects=True,
-        )
+        client = _get_client()
+        resp = client.get(google_url)
         resp.raise_for_status()
-    except requests.RequestException:
+    except httpx.HTTPError:
         return {}
 
     text = resp.text.lower()
