@@ -118,40 +118,65 @@ def _ddg_search(query: str, max_results: int = 8) -> list[dict]:
       [{"url": "...", "title": "...", "snippet": "..."}, ...]
 
     Uses the HTML lite version to avoid needing an API key.
+    Retries with exponential backoff if DuckDuckGo blocks/rate-limits.
     """
     url = "https://html.duckduckgo.com/html/"
-    try:
-        client = _get_client()
-        resp = client.post(url, data={"q": query, "b": ""})
-        resp.raise_for_status()
-    except httpx.HTTPError as exc:
-        logger.warning("Search failed for %r: %s", query, exc)
-        return []
 
-    soup = BeautifulSoup(resp.text, "html.parser")
-    results = []
+    for attempt in range(3):
+        try:
+            client = _get_client()
+            resp = client.post(url, data={"q": query, "b": ""})
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning("Search failed for %r: %s", query, exc)
+            return []
 
-    for result_div in soup.select(".result"):
-        link_tag = result_div.select_one("a.result__a")
-        snippet_tag = result_div.select_one(".result__snippet")
-        if not link_tag:
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # Detect DuckDuckGo CAPTCHA / rate-limit block
+        page_text = resp.text.lower()
+        if ("please try again" in page_text
+                or "blocked" in page_text
+                or "unusual traffic" in page_text
+                or "robot" in page_text):
+            wait = (attempt + 1) * 5  # 5s, 10s, 15s
+            logger.warning("DuckDuckGo rate-limited on %r — waiting %ds (attempt %d/3)",
+                           query, wait, attempt + 1)
+            time.sleep(wait)
             continue
 
-        href = link_tag.get("href", "")
-        # DuckDuckGo wraps URLs in a redirect — extract the real URL
-        real_url = _extract_ddg_url(href)
-        if not real_url:
+        results = []
+        for result_div in soup.select(".result"):
+            link_tag = result_div.select_one("a.result__a")
+            snippet_tag = result_div.select_one(".result__snippet")
+            if not link_tag:
+                continue
+
+            href = link_tag.get("href", "")
+            # DuckDuckGo wraps URLs in a redirect — extract the real URL
+            real_url = _extract_ddg_url(href)
+            if not real_url:
+                continue
+
+            results.append({
+                "url": real_url,
+                "title": link_tag.get_text(strip=True),
+                "snippet": snippet_tag.get_text(strip=True) if snippet_tag else "",
+            })
+            if len(results) >= max_results:
+                break
+
+        if not results and attempt < 2:
+            # Got zero results — might be a soft block, retry once with a delay
+            wait = (attempt + 1) * 4
+            logger.debug("Zero results for %r — retrying after %ds", query, wait)
+            time.sleep(wait)
             continue
 
-        results.append({
-            "url": real_url,
-            "title": link_tag.get_text(strip=True),
-            "snippet": snippet_tag.get_text(strip=True) if snippet_tag else "",
-        })
-        if len(results) >= max_results:
-            break
+        return results
 
-    return results
+    logger.warning("All retries exhausted for %r", query)
+    return []
 
 
 def _extract_ddg_url(href: str) -> str:
@@ -405,12 +430,17 @@ def discover_contacts(biz: dict) -> ContactInfo:
     # Step 2: Search for anything not already found
     if not info.instagram:
         info.instagram = _find_instagram(name, city)
+        _rate_limit()
 
     if not info.facebook:
         info.facebook = _find_facebook(name, city)
+        _rate_limit()
 
     info.tiktok = _find_tiktok(name, city)
+    _rate_limit()
+
     info.yelp = _find_yelp(name, city)
+    _rate_limit()
 
     if not info.email:
         info.email = _find_email(name, city)

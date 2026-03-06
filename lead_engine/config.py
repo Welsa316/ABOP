@@ -140,8 +140,8 @@ SERVICE_KEYWORDS = [
 # Contact discovery (search-based)
 # ---------------------------------------------------------------------------
 CONTACT_DISCOVERY_TIMEOUT = 10   # seconds per search request
-CONTACT_DISCOVERY_DELAY_MIN = 1.5  # min seconds between search queries
-CONTACT_DISCOVERY_DELAY_MAX = 3.0  # max seconds between search queries
+CONTACT_DISCOVERY_DELAY_MIN = 2.0  # min seconds between search queries
+CONTACT_DISCOVERY_DELAY_MAX = 4.0  # max seconds between search queries
 
 # ---------------------------------------------------------------------------
 # Targeting mode
