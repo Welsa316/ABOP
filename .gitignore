@@ -1,0 +1,12 @@
+# Environment
+.env
+__pycache__/
+*.pyc
+
+# Output (optional — remove this line if you want to commit outputs)
+output/
+
+# IDE
+.vscode/
+.idea/
+*.swp
