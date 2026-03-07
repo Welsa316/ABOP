@@ -1,23 +1,28 @@
 """
 contact_discovery.py — Find social media profiles and email addresses
-for businesses that have no website.
+for businesses using web search.
 
-Uses DuckDuckGo search to discover Instagram, Facebook, TikTok,
-Yelp pages, and email addresses using business name + city queries.
+Search backends (tried in order):
+  1. duckduckgo-search library (if installed)
+  2. Google HTML scraping (reliable fallback)
+  3. DuckDuckGo HTML scraping (last resort)
+
+Discovers Instagram, Facebook, TikTok, Yelp pages, and email addresses
+using business name + city queries.
 """
 
 import re
 import time
 import random
 import logging
-from dataclasses import dataclass, field
-from urllib.parse import urlparse, unquote
+from dataclasses import dataclass
+from urllib.parse import urlparse, unquote, quote_plus
 
 import httpx
 
 from . import config
 
-# Try the dedicated DuckDuckGo search library first (much more reliable)
+# Try the dedicated DuckDuckGo search library first
 try:
     from duckduckgo_search import DDGS
     _HAS_DDGS = True
@@ -31,6 +36,9 @@ except ImportError:
     _HAS_BS4 = False
 
 logger = logging.getLogger("lead_engine")
+
+# Track which search backend is working
+_search_backend: str = "unknown"  # "ddgs", "google", "ddg_html", "none"
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -71,7 +79,6 @@ class ContactInfo:
 
     def _pick_best_channel(self):
         """Choose the best contact channel based on what was found."""
-        # Priority: email > instagram > facebook > tiktok > yelp
         if self.email:
             self.best_contact_channel = "email"
         elif self.instagram:
@@ -90,7 +97,6 @@ class ContactInfo:
 # URL validation helpers
 # ---------------------------------------------------------------------------
 
-# Patterns that indicate a result is NOT a real business profile
 _INSTAGRAM_REJECT = re.compile(
     r"/(explore|tags|locations|p/|reel/|stories/|accounts/)",
     re.IGNORECASE,
@@ -109,25 +115,27 @@ _EMAIL_RE = re.compile(
     r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}"
 )
 
-# Emails to ignore (generic / false positives)
 _JUNK_EMAIL_DOMAINS = {
     "example.com", "sentry.io", "wixpress.com", "squarespace.com",
     "wordpress.com", "godaddy.com", "google.com", "facebook.com",
     "instagram.com", "tiktok.com", "yelp.com", "apple.com",
 }
 
-# HTTP headers for search requests (used by HTML fallback and Google Maps)
+# Rotating user agents to reduce blocking
+_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:132.0) Gecko/20100101 Firefox/132.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+
 _HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/131.0.0.0 Safari/537.36"
-    ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Reusable httpx client (created lazily to avoid import-time side effects)
+# Reusable httpx client
 _client: httpx.Client | None = None
 
 # Reusable DDGS instance
@@ -138,12 +146,31 @@ def _get_client() -> httpx.Client:
     """Return a shared httpx client, creating it on first use."""
     global _client
     if _client is None:
+        headers = {**_HEADERS, "User-Agent": random.choice(_USER_AGENTS)}
         _client = httpx.Client(
-            headers=_HEADERS,
+            headers=headers,
             follow_redirects=True,
             verify=False,
             timeout=config.CONTACT_DISCOVERY_TIMEOUT,
         )
+    return _client
+
+
+def _fresh_client() -> httpx.Client:
+    """Create a new client with a fresh user agent (for retries after blocks)."""
+    global _client
+    if _client:
+        try:
+            _client.close()
+        except Exception:
+            pass
+    headers = {**_HEADERS, "User-Agent": random.choice(_USER_AGENTS)}
+    _client = httpx.Client(
+        headers=headers,
+        follow_redirects=True,
+        verify=False,
+        timeout=config.CONTACT_DISCOVERY_TIMEOUT,
+    )
     return _client
 
 
@@ -156,31 +183,56 @@ def _get_ddgs() -> "DDGS":
 
 
 # ---------------------------------------------------------------------------
-# Search helpers
+# Search backends
 # ---------------------------------------------------------------------------
 
-def _ddg_search(query: str, max_results: int = 8) -> list[dict]:
+def _web_search(query: str, max_results: int = 8) -> list[dict]:
     """
-    Search DuckDuckGo and return a list of result dicts:
+    Search the web and return a list of result dicts:
       [{"url": "...", "title": "...", "snippet": "..."}, ...]
 
-    Uses the duckduckgo-search library (primary) with HTML fallback.
+    Tries multiple backends in order of reliability.
     """
-    # --- Primary: duckduckgo-search library ---
-    if _HAS_DDGS:
-        return _ddg_search_library(query, max_results)
+    global _search_backend
 
-    # --- Fallback: manual HTML scraping ---
+    # If we already know which backend works, use it first
+    if _search_backend == "google":
+        results = _google_search(query, max_results)
+        if results:
+            return results
+    elif _search_backend == "ddgs":
+        results = _ddg_search_library(query, max_results)
+        if results:
+            return results
+
+    # Try all backends in order
+    # 1. DDGS library (if we haven't determined it fails)
+    if _HAS_DDGS and _search_backend in ("unknown", "ddgs"):
+        results = _ddg_search_library(query, max_results)
+        if results:
+            _search_backend = "ddgs"
+            return results
+
+    # 2. Google HTML scraping (most reliable fallback)
     if _HAS_BS4:
-        return _ddg_search_html(query, max_results)
+        results = _google_search(query, max_results)
+        if results:
+            _search_backend = "google"
+            return results
 
-    logger.error("No search backend available — install duckduckgo-search")
+    # 3. DuckDuckGo HTML scraping (last resort)
+    if _HAS_BS4:
+        results = _ddg_search_html(query, max_results)
+        if results:
+            _search_backend = "ddg_html"
+            return results
+
     return []
 
 
 def _ddg_search_library(query: str, max_results: int = 8) -> list[dict]:
     """Search using the duckduckgo-search Python library."""
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             ddgs = _get_ddgs()
             raw = ddgs.text(query, max_results=max_results)
@@ -192,48 +244,146 @@ def _ddg_search_library(query: str, max_results: int = 8) -> list[dict]:
                     "snippet": r.get("body", ""),
                 })
             if results:
-                logger.debug("DDGS search OK: %r → %d results", query, len(results))
-            else:
-                logger.warning("DDGS search returned 0 results for %r", query)
+                logger.debug("DDGS library OK: %r → %d results", query, len(results))
             return results
         except Exception as exc:
-            wait = (attempt + 1) * 3
-            logger.warning("DDGS search error for %r (attempt %d/3): %s — retrying in %ds",
-                           query, attempt + 1, exc, wait)
-            # Reset the DDGS instance in case it's in a bad state
+            logger.debug("DDGS library error for %r (attempt %d): %s", query, attempt + 1, exc)
             global _ddgs
             _ddgs = None
+            if attempt < 1:
+                time.sleep(3)
+    return []
+
+
+def _google_search(query: str, max_results: int = 8) -> list[dict]:
+    """Search Google by scraping the HTML results page."""
+    if not _HAS_BS4:
+        return []
+
+    encoded_q = quote_plus(query)
+    url = f"https://www.google.com/search?q={encoded_q}&num={max_results}&hl=en"
+
+    for attempt in range(3):
+        try:
+            client = _get_client()
+            resp = client.get(url)
+
+            # If blocked, rotate user agent and retry
+            if resp.status_code in (429, 503) or resp.status_code >= 400:
+                logger.debug("Google returned %d for %r — rotating UA (attempt %d)",
+                             resp.status_code, query, attempt + 1)
+                _fresh_client()
+                time.sleep((attempt + 1) * 3)
+                continue
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            results = []
+
+            # Method 1: Standard Google result divs
+            for div in soup.select("div.g"):
+                link = div.select_one("a[href]")
+                if not link:
+                    continue
+                href = link.get("href", "")
+                if not href.startswith("http"):
+                    continue
+                # Skip Google's own URLs
+                if "google.com" in href or "googleapis.com" in href:
+                    continue
+
+                title_el = div.select_one("h3")
+                title = title_el.get_text(strip=True) if title_el else ""
+
+                # Try multiple snippet selectors
+                snippet = ""
+                for sel in [".VwiC3b", "div[data-sncf]", ".IsZvec", "span.st"]:
+                    snip_el = div.select_one(sel)
+                    if snip_el:
+                        snippet = snip_el.get_text(strip=True)
+                        break
+
+                results.append({
+                    "url": href,
+                    "title": title,
+                    "snippet": snippet,
+                })
+                if len(results) >= max_results:
+                    break
+
+            # Method 2: If method 1 found nothing, try broader link extraction
+            if not results:
+                for a_tag in soup.find_all("a", href=True):
+                    href = a_tag["href"]
+                    # Google wraps some results in /url?q=...
+                    if href.startswith("/url?q="):
+                        actual = href.split("/url?q=")[1].split("&")[0]
+                        href = unquote(actual)
+                    if not href.startswith("http"):
+                        continue
+                    if "google.com" in href or "googleapis.com" in href:
+                        continue
+                    if any(d in href for d in ["instagram.com", "facebook.com",
+                                               "tiktok.com", "yelp.com"]):
+                        title = a_tag.get_text(strip=True)
+                        results.append({
+                            "url": href,
+                            "title": title,
+                            "snippet": "",
+                        })
+                        if len(results) >= max_results:
+                            break
+
+            if results:
+                logger.debug("Google search OK: %r → %d results", query, len(results))
+                return results
+
+            # Check if we got a CAPTCHA page
+            page_text = resp.text.lower()
+            if "captcha" in page_text or "unusual traffic" in page_text:
+                logger.debug("Google CAPTCHA detected for %r", query)
+                _fresh_client()
+                time.sleep((attempt + 1) * 5)
+                continue
+
+            # Got a valid page but no results extracted
+            logger.debug("Google returned page but 0 results parsed for %r", query)
+            return []
+
+        except httpx.HTTPError as exc:
+            logger.debug("Google HTTP error for %r: %s", query, exc)
             if attempt < 2:
-                time.sleep(wait)
-    logger.warning("All search attempts failed for: %s", query)
+                time.sleep((attempt + 1) * 2)
+            continue
+
     return []
 
 
 def _ddg_search_html(query: str, max_results: int = 8) -> list[dict]:
     """Fallback: scrape DuckDuckGo HTML lite directly."""
+    if not _HAS_BS4:
+        return []
+
     url = "https://html.duckduckgo.com/html/"
 
-    for attempt in range(3):
+    for attempt in range(2):
         try:
             client = _get_client()
             resp = client.post(url, data={"q": query, "b": ""})
             resp.raise_for_status()
         except httpx.HTTPError as exc:
-            logger.warning("HTML search failed for %r: %s", query, exc)
+            logger.debug("DDG HTML failed for %r: %s", query, exc)
             return []
 
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Detect DuckDuckGo CAPTCHA / rate-limit block
         page_text = resp.text.lower()
         if ("please try again" in page_text
                 or "blocked" in page_text
                 or "unusual traffic" in page_text
                 or "robot" in page_text):
-            wait = (attempt + 1) * 5
-            logger.warning("DuckDuckGo rate-limited on %r — waiting %ds (attempt %d/3)",
-                           query, wait, attempt + 1)
-            time.sleep(wait)
+            logger.debug("DDG HTML rate-limited on %r (attempt %d)", query, attempt + 1)
+            time.sleep((attempt + 1) * 5)
             continue
 
         results = []
@@ -256,15 +406,9 @@ def _ddg_search_html(query: str, max_results: int = 8) -> list[dict]:
             if len(results) >= max_results:
                 break
 
-        if not results and attempt < 2:
-            wait = (attempt + 1) * 4
-            logger.debug("Zero results for %r — retrying after %ds", query, wait)
-            time.sleep(wait)
-            continue
+        if results:
+            return results
 
-        return results
-
-    logger.warning("All retries exhausted for %r", query)
     return []
 
 
@@ -294,7 +438,6 @@ def _rate_limit() -> None:
 
 def _clean_name(name: str) -> str:
     """Simplify business name for matching."""
-    # Remove common suffixes, punctuation
     cleaned = re.sub(r"[''`]", "", name.lower())
     cleaned = re.sub(r"\b(llc|inc|corp|ltd|the|and|of|restaurant|bar|grill|cafe|café|"
                       r"sports|kitchen|house|place|shop|store|lounge|club)\b", "", cleaned)
@@ -304,7 +447,6 @@ def _clean_name(name: str) -> str:
 
 def _calc_confidence(query_index: int, result_index: int) -> str:
     """Estimate confidence based on which query and result position matched."""
-    # First query + first result = highest confidence
     if query_index == 0 and result_index == 0:
         return "high"
     if query_index <= 1 and result_index <= 1:
@@ -321,13 +463,12 @@ def _name_matches(url: str, biz_name: str) -> bool:
     """
     url_lower = unquote(url).lower().replace("-", "").replace("_", "").replace(".", "")
     name_words = _clean_name(biz_name).split()
-    # Require at least one significant word (3+ chars) to match
     significant = [w for w in name_words if len(w) >= 3]
     if not significant:
-        return True  # short name, can't filter well
+        return True
     matches = sum(1 for w in significant if w in url_lower)
     if matches == 0:
-        logger.debug("Name match failed: words=%s not found in URL %s", significant, url_lower)
+        logger.debug("Name match failed: words=%s not in URL %s", significant, url_lower)
     return matches >= 1
 
 
@@ -337,31 +478,29 @@ def _find_instagram(biz_name: str, city: str) -> tuple[str, str]:
         f"site:instagram.com {biz_name} {city}",
         f"{biz_name} {city} instagram",
     ]
-    # Fallback: try without city if city queries return nothing useful
     if city:
         queries.append(f"site:instagram.com {biz_name}")
         queries.append(f"{biz_name} instagram")
     for qi, query in enumerate(queries):
-        results = _ddg_search(query, max_results=5)
+        results = _web_search(query, max_results=5)
         _rate_limit()
         for ri, r in enumerate(results):
             url = r["url"]
             parsed = urlparse(url)
             if "instagram.com" not in parsed.netloc:
                 continue
-            # Must be a profile URL like instagram.com/username
             path = parsed.path.strip("/")
             if not path or "/" in path:
-                continue  # sub-page like /p/xxxxx
+                continue
             if _INSTAGRAM_REJECT.search(url):
                 continue
             if _name_matches(url, biz_name):
                 clean = f"https://instagram.com/{path}"
                 confidence = _calc_confidence(qi, ri)
-                logger.info("    ✅ Instagram found (%s): %s", confidence, clean)
+                logger.info("    Found Instagram (%s): %s", confidence, clean)
                 return clean, confidence
             else:
-                logger.info("    ⏭️  Instagram candidate rejected (name mismatch): %s", url)
+                logger.debug("    Instagram rejected (name mismatch): %s", url)
     return "", ""
 
 
@@ -375,7 +514,7 @@ def _find_facebook(biz_name: str, city: str) -> tuple[str, str]:
         queries.append(f"site:facebook.com {biz_name}")
         queries.append(f"{biz_name} facebook")
     for qi, query in enumerate(queries):
-        results = _ddg_search(query, max_results=5)
+        results = _web_search(query, max_results=5)
         _rate_limit()
         for ri, r in enumerate(results):
             url = r["url"]
@@ -390,10 +529,10 @@ def _find_facebook(biz_name: str, city: str) -> tuple[str, str]:
             if _name_matches(url, biz_name):
                 clean = f"https://facebook.com/{path}"
                 confidence = _calc_confidence(qi, ri)
-                logger.info("    ✅ Facebook found (%s): %s", confidence, clean)
+                logger.info("    Found Facebook (%s): %s", confidence, clean)
                 return clean, confidence
             else:
-                logger.info("    ⏭️  Facebook candidate rejected (name mismatch): %s", url)
+                logger.debug("    Facebook rejected (name mismatch): %s", url)
     return "", ""
 
 
@@ -403,7 +542,7 @@ def _find_tiktok(biz_name: str, city: str) -> tuple[str, str]:
     if city:
         queries.append(f"site:tiktok.com {biz_name}")
     for qi, query in enumerate(queries):
-        results = _ddg_search(query, max_results=5)
+        results = _web_search(query, max_results=5)
         _rate_limit()
         for ri, r in enumerate(results):
             url = r["url"]
@@ -416,11 +555,11 @@ def _find_tiktok(biz_name: str, city: str) -> tuple[str, str]:
             if not path or not path.startswith("@"):
                 continue
             if "/" in path:
-                continue  # sub-page like /@user/video/123
+                continue
             if _name_matches(url, biz_name):
                 clean = f"https://tiktok.com/{path}"
                 confidence = _calc_confidence(qi, ri)
-                logger.info("    ✅ TikTok found (%s): %s", confidence, clean)
+                logger.info("    Found TikTok (%s): %s", confidence, clean)
                 return clean, confidence
     return "", ""
 
@@ -431,7 +570,7 @@ def _find_yelp(biz_name: str, city: str) -> tuple[str, str]:
     if city:
         queries.append(f"site:yelp.com {biz_name}")
     for qi, query in enumerate(queries):
-        results = _ddg_search(query, max_results=5)
+        results = _web_search(query, max_results=5)
         _rate_limit()
         for ri, r in enumerate(results):
             url = r["url"]
@@ -439,16 +578,16 @@ def _find_yelp(biz_name: str, city: str) -> tuple[str, str]:
             if "yelp.com" not in parsed.netloc:
                 continue
             if "/biz/" not in parsed.path:
-                continue  # only want business pages
+                continue
             if _name_matches(url, biz_name):
                 confidence = _calc_confidence(qi, ri)
-                logger.info("    ✅ Yelp found (%s): %s", confidence, url)
+                logger.info("    Found Yelp (%s): %s", confidence, url)
                 return url, confidence
     return "", ""
 
 
 def _find_email(biz_name: str, city: str) -> tuple[str, str]:
-    """Search for the business's email address in search snippets. Returns (email, confidence)."""
+    """Search for the business's email address in search snippets."""
     queries = [
         f"{biz_name} {city} email",
         f"{biz_name} {city} contact email",
@@ -456,7 +595,7 @@ def _find_email(biz_name: str, city: str) -> tuple[str, str]:
     found_emails: list[str] = []
 
     for query in queries:
-        results = _ddg_search(query, max_results=5)
+        results = _web_search(query, max_results=5)
         _rate_limit()
         for r in results:
             text = f"{r['title']} {r['snippet']}"
@@ -465,19 +604,16 @@ def _find_email(biz_name: str, city: str) -> tuple[str, str]:
                 domain = email.split("@")[1].lower()
                 if domain in _JUNK_EMAIL_DOMAINS:
                     continue
-                # Skip obviously fake/template emails
                 local = email.split("@")[0].lower()
                 if local in ("info", "noreply", "no-reply", "example", "test"):
                     continue
                 found_emails.append(email.lower())
 
         if found_emails:
-            break  # got at least one, stop searching
+            break
 
     if found_emails:
-        # Prefer the most commonly found email
         best = max(set(found_emails), key=found_emails.count)
-        # Confidence: high if found multiple times, medium otherwise
         count = found_emails.count(best)
         confidence = "high" if count >= 2 else "medium"
         logger.debug("Email found: %s → %s (%s)", biz_name, best, confidence)
@@ -504,10 +640,8 @@ def _check_google_listing(google_url: str) -> dict:
     except httpx.HTTPError:
         return {}
 
-    text = resp.text.lower()
     found = {}
 
-    # Look for social links in the page content
     ig_match = re.search(r'https?://(?:www\.)?instagram\.com/([a-zA-Z0-9_.]+)', resp.text)
     if ig_match:
         found["instagram"] = f"https://instagram.com/{ig_match.group(1)}"
@@ -551,7 +685,7 @@ def discover_contacts(biz: dict) -> ContactInfo:
         gmap_links = _check_google_listing(google_url)
         if gmap_links.get("instagram"):
             info.instagram = gmap_links["instagram"]
-            info.instagram_confidence = "high"  # from Google listing = reliable
+            info.instagram_confidence = "high"
         if gmap_links.get("facebook"):
             info.facebook = gmap_links["facebook"]
             info.facebook_confidence = "high"
@@ -591,27 +725,43 @@ def discover_all_contacts(
 
     Returns a dict mapping business index → ContactInfo.
     Includes rate limiting between businesses.
-
-    If *progress_callback* is provided it is called after each business as
-    ``progress_callback(current_index, total, business_name, contact_info)``.
     """
+    global _search_backend
     total = len(businesses)
     results: dict[int, ContactInfo] = {}
 
-    # Quick connectivity check — test a simple search before processing all businesses
+    # --- Connectivity test: try all backends to find one that works ---
+    logger.info("Testing search backends ...")
+    _search_backend = "unknown"
+
+    # Test DDGS library
     if _HAS_DDGS:
-        logger.info("Using duckduckgo-search library for contact discovery")
-        print("      Search backend: duckduckgo-search library")
-    else:
-        logger.warning("duckduckgo-search not installed — using HTML fallback (less reliable)")
-        print("      ⚠️  duckduckgo-search NOT installed — using HTML scraping fallback")
-    test_results = _ddg_search("test", max_results=1)
-    if not test_results:
-        logger.warning("Search connectivity test failed — results may be limited")
-        print("      ⚠️  Search connectivity test FAILED — DuckDuckGo may be blocking requests")
-        print("      Contact discovery results will likely be empty.")
-    else:
-        print("      ✅ Search connectivity test passed")
+        test = _ddg_search_library("test site:instagram.com", max_results=1)
+        if test:
+            _search_backend = "ddgs"
+            logger.info("Search backend: duckduckgo-search library (working)")
+        else:
+            logger.info("duckduckgo-search library returned 0 results — trying fallbacks")
+
+    # Test Google HTML
+    if _search_backend == "unknown" and _HAS_BS4:
+        test = _google_search("test site:instagram.com", max_results=1)
+        if test:
+            _search_backend = "google"
+            logger.info("Search backend: Google HTML scraping (working)")
+        else:
+            logger.info("Google HTML scraping returned 0 results — trying DDG HTML")
+
+    # Test DDG HTML
+    if _search_backend == "unknown" and _HAS_BS4:
+        test = _ddg_search_html("test site:instagram.com", max_results=1)
+        if test:
+            _search_backend = "ddg_html"
+            logger.info("Search backend: DuckDuckGo HTML scraping (working)")
+
+    if _search_backend == "unknown":
+        logger.warning("ALL search backends failed — contact discovery will return empty results")
+        _search_backend = "none"
 
     for i, biz in enumerate(businesses):
         name = biz.get("business_name", "?")
@@ -620,7 +770,6 @@ def discover_all_contacts(
         try:
             info = discover_contacts(biz)
             results[i] = info
-            methods = info.contact_methods_found
             parts = []
             if info.instagram:
                 parts.append("IG")
@@ -633,7 +782,7 @@ def discover_all_contacts(
             if info.email:
                 parts.append("Email")
             summary = ", ".join(parts) if parts else "none"
-            logger.info("  → Found %d contacts: %s", methods, summary)
+            logger.info("  → %s", summary)
 
             if progress_callback:
                 progress_callback(i, total, name, info)
@@ -645,7 +794,7 @@ def discover_all_contacts(
                 progress_callback(i, total, name, results[i])
 
     found_any = sum(1 for c in results.values() if c.contact_methods_found > 0)
-    logger.info("Contact discovery complete: %d/%d businesses have contacts",
-                found_any, total)
+    logger.info("Contact discovery complete: %d/%d businesses have contacts (backend: %s)",
+                found_any, total, _search_backend)
 
     return results
