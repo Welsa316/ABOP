@@ -1,5 +1,5 @@
 """
-run.py — Main entry point for the Lead Scoring & Outreach Tool.
+run.py — Main entry point for the Lead Intelligence CRM Tool.
 
 Usage:
     python run.py                              (interactive prompts)
@@ -115,7 +115,7 @@ def _save_progress(businesses: list[dict], stage: str) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Lead Scoring & Outreach Generator for Local Businesses",
+        description="Lead Intelligence CRM for Local Businesses",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -152,7 +152,7 @@ Examples:
 
 def interactive_csv_prompt() -> str:
     """If no --csv flag, prompt the user for a file path."""
-    print("\n=== Lead Scoring & Outreach Generator ===\n")
+    print("\n=== Lead Intelligence CRM — Local Business Outreach Tool ===\n")
 
     # Auto-detect CSV files in the app directory (works from .exe too)
     csvs = sorted(BASE_DIR.glob("*.csv"))
@@ -210,7 +210,7 @@ def main() -> None:
     skip_analyze = args.no_analyze or config.NO_WEBSITE_ONLY
     if skip_analyze:
         reason = "no-website-only mode" if config.NO_WEBSITE_ONLY else "--no-analyze"
-        print(f"\n[2/5] Skipping website analysis ({reason})")
+        print(f"\n[2/5] Skipping website analysis ({reason}).")
         analyses = {}
     else:
         print(f"\n[2/5] Analysing websites (timeout={config.REQUEST_TIMEOUT}s, "
@@ -226,7 +226,7 @@ def main() -> None:
     # Stage 3: Contact discovery
     # ------------------------------------------------------------------
     if args.no_contacts:
-        print("\n[3/5] Skipping contact discovery (--no-contacts)")
+        print("\n[3/5] Skipping contact discovery (--no-contacts).")
     else:
         print(f"\n[3/5] Discovering contacts (social media, emails) ...")
         print(f"      This searches for each business — may take a few minutes.")
@@ -242,6 +242,11 @@ def main() -> None:
                 biz["email"] = info.email
                 biz["yelp"] = info.yelp
                 biz["contact_methods_found"] = info.contact_methods_found
+                biz["best_contact_channel"] = info.best_contact_channel
+                biz["instagram_confidence"] = info.instagram_confidence
+                biz["facebook_confidence"] = info.facebook_confidence
+                biz["tiktok_confidence"] = info.tiktok_confidence
+                biz["email_confidence"] = info.email_confidence
 
         found_any = sum(1 for c in contacts.values() if c.contact_methods_found > 0)
         print(f"      Found contacts for {found_any}/{len(businesses)} businesses.")
@@ -255,17 +260,19 @@ def main() -> None:
     top = businesses[0] if businesses else {}
     print(f"      Top lead: {top.get('business_name', '?')} "
           f"(score={top.get('lead_score', 0)})")
+    if top.get("recommended_pitch_label"):
+        print(f"      Angle: {top.get('recommended_pitch_label')}")
     _save_progress(businesses, "scored")
 
     # ------------------------------------------------------------------
     # Stage 5: Message generation
     # ------------------------------------------------------------------
     if args.no_ai:
-        print("\n[5/5] Skipping AI message generation (--no-ai)")
+        print("\n[5/5] Skipping AI message generation (--no-ai).")
         for biz in businesses:
-            biz["email_message"] = ""
-            biz["contact_form_message"] = ""
-            biz["dm_message"] = ""
+            for field in ("email_subject", "email_message", "contact_form_message",
+                          "dm_message", "follow_up_message", "call_script"):
+                biz[field] = ""
             biz["message_error"] = "skipped"
     else:
         # Prompt for key if missing (first-time setup)
@@ -274,9 +281,9 @@ def main() -> None:
         if not config.ANTHROPIC_API_KEY:
             print("\n[5/5] No API key — skipping AI message generation.")
             for biz in businesses:
-                biz["email_message"] = ""
-                biz["contact_form_message"] = ""
-                biz["dm_message"] = ""
+                for field in ("email_subject", "email_message", "contact_form_message",
+                              "dm_message", "follow_up_message", "call_script"):
+                    biz[field] = ""
                 biz["message_error"] = "api_key_missing"
         else:
             print("\n[5/5] Generating outreach messages with Claude ...")

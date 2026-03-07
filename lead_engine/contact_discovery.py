@@ -45,6 +45,13 @@ class ContactInfo:
     yelp: str = ""
     email: str = ""
     contact_methods_found: int = 0
+    # Confidence scores: "high", "medium", "low"
+    instagram_confidence: str = ""
+    facebook_confidence: str = ""
+    tiktok_confidence: str = ""
+    yelp_confidence: str = ""
+    email_confidence: str = ""
+    best_contact_channel: str = ""
 
     def count_methods(self) -> int:
         count = 0
@@ -59,7 +66,24 @@ class ContactInfo:
         if self.yelp:
             count += 1
         self.contact_methods_found = count
+        self._pick_best_channel()
         return count
+
+    def _pick_best_channel(self):
+        """Choose the best contact channel based on what was found."""
+        # Priority: email > instagram > facebook > tiktok > yelp
+        if self.email:
+            self.best_contact_channel = "email"
+        elif self.instagram:
+            self.best_contact_channel = "instagram_dm"
+        elif self.facebook:
+            self.best_contact_channel = "facebook"
+        elif self.tiktok:
+            self.best_contact_channel = "tiktok"
+        elif self.yelp:
+            self.best_contact_channel = "yelp"
+        else:
+            self.best_contact_channel = "none"
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +302,18 @@ def _clean_name(name: str) -> str:
     return cleaned.strip()
 
 
+def _calc_confidence(query_index: int, result_index: int) -> str:
+    """Estimate confidence based on which query and result position matched."""
+    # First query + first result = highest confidence
+    if query_index == 0 and result_index == 0:
+        return "high"
+    if query_index <= 1 and result_index <= 1:
+        return "high"
+    if query_index <= 1:
+        return "medium"
+    return "low"
+
+
 def _name_matches(url: str, biz_name: str) -> bool:
     """
     Heuristic: does the URL path likely correspond to this business?
@@ -295,8 +331,8 @@ def _name_matches(url: str, biz_name: str) -> bool:
     return matches >= 1
 
 
-def _find_instagram(biz_name: str, city: str) -> str:
-    """Search for the business's Instagram profile."""
+def _find_instagram(biz_name: str, city: str) -> tuple[str, str]:
+    """Search for the business's Instagram profile. Returns (url, confidence)."""
     queries = [
         f"site:instagram.com {biz_name} {city}",
         f"{biz_name} {city} instagram",
@@ -305,10 +341,10 @@ def _find_instagram(biz_name: str, city: str) -> str:
     if city:
         queries.append(f"site:instagram.com {biz_name}")
         queries.append(f"{biz_name} instagram")
-    for query in queries:
+    for qi, query in enumerate(queries):
         results = _ddg_search(query, max_results=5)
         _rate_limit()
-        for r in results:
+        for ri, r in enumerate(results):
             url = r["url"]
             parsed = urlparse(url)
             if "instagram.com" not in parsed.netloc:
@@ -321,15 +357,16 @@ def _find_instagram(biz_name: str, city: str) -> str:
                 continue
             if _name_matches(url, biz_name):
                 clean = f"https://instagram.com/{path}"
-                logger.info("    ✅ Instagram found: %s", clean)
-                return clean
+                confidence = _calc_confidence(qi, ri)
+                logger.info("    ✅ Instagram found (%s): %s", confidence, clean)
+                return clean, confidence
             else:
                 logger.info("    ⏭️  Instagram candidate rejected (name mismatch): %s", url)
-    return ""
+    return "", ""
 
 
-def _find_facebook(biz_name: str, city: str) -> str:
-    """Search for the business's Facebook page."""
+def _find_facebook(biz_name: str, city: str) -> tuple[str, str]:
+    """Search for the business's Facebook page. Returns (url, confidence)."""
     queries = [
         f"site:facebook.com {biz_name} {city}",
         f"{biz_name} {city} facebook",
@@ -337,10 +374,10 @@ def _find_facebook(biz_name: str, city: str) -> str:
     if city:
         queries.append(f"site:facebook.com {biz_name}")
         queries.append(f"{biz_name} facebook")
-    for query in queries:
+    for qi, query in enumerate(queries):
         results = _ddg_search(query, max_results=5)
         _rate_limit()
-        for r in results:
+        for ri, r in enumerate(results):
             url = r["url"]
             parsed = urlparse(url)
             if "facebook.com" not in parsed.netloc and "fb.com" not in parsed.netloc:
@@ -352,22 +389,23 @@ def _find_facebook(biz_name: str, city: str) -> str:
                 continue
             if _name_matches(url, biz_name):
                 clean = f"https://facebook.com/{path}"
-                logger.info("    ✅ Facebook found: %s", clean)
-                return clean
+                confidence = _calc_confidence(qi, ri)
+                logger.info("    ✅ Facebook found (%s): %s", confidence, clean)
+                return clean, confidence
             else:
                 logger.info("    ⏭️  Facebook candidate rejected (name mismatch): %s", url)
-    return ""
+    return "", ""
 
 
-def _find_tiktok(biz_name: str, city: str) -> str:
-    """Search for the business's TikTok profile."""
+def _find_tiktok(biz_name: str, city: str) -> tuple[str, str]:
+    """Search for the business's TikTok profile. Returns (url, confidence)."""
     queries = [f"site:tiktok.com {biz_name} {city}"]
     if city:
         queries.append(f"site:tiktok.com {biz_name}")
-    for query in queries:
+    for qi, query in enumerate(queries):
         results = _ddg_search(query, max_results=5)
         _rate_limit()
-        for r in results:
+        for ri, r in enumerate(results):
             url = r["url"]
             parsed = urlparse(url)
             if "tiktok.com" not in parsed.netloc:
@@ -381,20 +419,21 @@ def _find_tiktok(biz_name: str, city: str) -> str:
                 continue  # sub-page like /@user/video/123
             if _name_matches(url, biz_name):
                 clean = f"https://tiktok.com/{path}"
-                logger.info("    ✅ TikTok found: %s", clean)
-                return clean
-    return ""
+                confidence = _calc_confidence(qi, ri)
+                logger.info("    ✅ TikTok found (%s): %s", confidence, clean)
+                return clean, confidence
+    return "", ""
 
 
-def _find_yelp(biz_name: str, city: str) -> str:
-    """Search for the business's Yelp page."""
+def _find_yelp(biz_name: str, city: str) -> tuple[str, str]:
+    """Search for the business's Yelp page. Returns (url, confidence)."""
     queries = [f"site:yelp.com {biz_name} {city}"]
     if city:
         queries.append(f"site:yelp.com {biz_name}")
-    for query in queries:
+    for qi, query in enumerate(queries):
         results = _ddg_search(query, max_results=5)
         _rate_limit()
-        for r in results:
+        for ri, r in enumerate(results):
             url = r["url"]
             parsed = urlparse(url)
             if "yelp.com" not in parsed.netloc:
@@ -402,13 +441,14 @@ def _find_yelp(biz_name: str, city: str) -> str:
             if "/biz/" not in parsed.path:
                 continue  # only want business pages
             if _name_matches(url, biz_name):
-                logger.info("    ✅ Yelp found: %s", url)
-                return url
-    return ""
+                confidence = _calc_confidence(qi, ri)
+                logger.info("    ✅ Yelp found (%s): %s", confidence, url)
+                return url, confidence
+    return "", ""
 
 
-def _find_email(biz_name: str, city: str) -> str:
-    """Search for the business's email address in search snippets."""
+def _find_email(biz_name: str, city: str) -> tuple[str, str]:
+    """Search for the business's email address in search snippets. Returns (email, confidence)."""
     queries = [
         f"{biz_name} {city} email",
         f"{biz_name} {city} contact email",
@@ -437,9 +477,12 @@ def _find_email(biz_name: str, city: str) -> str:
     if found_emails:
         # Prefer the most commonly found email
         best = max(set(found_emails), key=found_emails.count)
-        logger.debug("Email found: %s → %s", biz_name, best)
-        return best
-    return ""
+        # Confidence: high if found multiple times, medium otherwise
+        count = found_emails.count(best)
+        confidence = "high" if count >= 2 else "medium"
+        logger.debug("Email found: %s → %s (%s)", biz_name, best, confidence)
+        return best, confidence
+    return "", ""
 
 
 # ---------------------------------------------------------------------------
@@ -506,28 +549,34 @@ def discover_contacts(biz: dict) -> ContactInfo:
     # Step 1: Check Google Maps listing for embedded links
     if google_url:
         gmap_links = _check_google_listing(google_url)
-        info.instagram = gmap_links.get("instagram", "")
-        info.facebook = gmap_links.get("facebook", "")
-        info.email = gmap_links.get("email", "")
+        if gmap_links.get("instagram"):
+            info.instagram = gmap_links["instagram"]
+            info.instagram_confidence = "high"  # from Google listing = reliable
+        if gmap_links.get("facebook"):
+            info.facebook = gmap_links["facebook"]
+            info.facebook_confidence = "high"
+        if gmap_links.get("email"):
+            info.email = gmap_links["email"]
+            info.email_confidence = "high"
         _rate_limit()
 
     # Step 2: Search for anything not already found
     if not info.instagram:
-        info.instagram = _find_instagram(name, city)
+        info.instagram, info.instagram_confidence = _find_instagram(name, city)
         _rate_limit()
 
     if not info.facebook:
-        info.facebook = _find_facebook(name, city)
+        info.facebook, info.facebook_confidence = _find_facebook(name, city)
         _rate_limit()
 
-    info.tiktok = _find_tiktok(name, city)
+    info.tiktok, info.tiktok_confidence = _find_tiktok(name, city)
     _rate_limit()
 
-    info.yelp = _find_yelp(name, city)
+    info.yelp, info.yelp_confidence = _find_yelp(name, city)
     _rate_limit()
 
     if not info.email:
-        info.email = _find_email(name, city)
+        info.email, info.email_confidence = _find_email(name, city)
 
     info.count_methods()
     return info

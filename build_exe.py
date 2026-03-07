@@ -68,6 +68,7 @@ def main():
         "--hidden-import", "primp",
         "--hidden-import", "lxml",
         "--hidden-import", "click",
+        "--hidden-import", "openpyxl",
         "gui.py",                      # build the GUI version
     ]
 
