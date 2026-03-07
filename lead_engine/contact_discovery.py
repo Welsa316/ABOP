@@ -38,7 +38,7 @@ except ImportError:
 logger = logging.getLogger("lead_engine")
 
 # Track which search backend is working
-_search_backend: str = "unknown"  # "ddgs", "google", "ddg_html", "none"
+_search_backend: str = "unknown"  # "ddgs", "bing", "google", "ddg_html", "none"
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -195,8 +195,12 @@ def _web_search(query: str, max_results: int = 8) -> list[dict]:
     """
     global _search_backend
 
-    # If we already know which backend works, use it first
-    if _search_backend == "google":
+    # If we already know which backend works, use it directly
+    if _search_backend == "bing":
+        results = _bing_search(query, max_results)
+        if results:
+            return results
+    elif _search_backend == "google":
         results = _google_search(query, max_results)
         if results:
             return results
@@ -204,27 +208,29 @@ def _web_search(query: str, max_results: int = 8) -> list[dict]:
         results = _ddg_search_library(query, max_results)
         if results:
             return results
-
-    # Try all backends in order
-    # 1. DDGS library (if we haven't determined it fails)
-    if _HAS_DDGS and _search_backend in ("unknown", "ddgs"):
-        results = _ddg_search_library(query, max_results)
-        if results:
-            _search_backend = "ddgs"
-            return results
-
-    # 2. Google HTML scraping (most reliable fallback)
-    if _HAS_BS4:
-        results = _google_search(query, max_results)
-        if results:
-            _search_backend = "google"
-            return results
-
-    # 3. DuckDuckGo HTML scraping (last resort)
-    if _HAS_BS4:
+    elif _search_backend == "ddg_html":
         results = _ddg_search_html(query, max_results)
         if results:
-            _search_backend = "ddg_html"
+            return results
+
+    # If the preferred backend returned nothing, try all others as fallback
+    # This handles cases where the backend works sometimes but not always
+    backends = []
+    if _HAS_DDGS and _search_backend != "ddgs":
+        backends.append(("ddgs", _ddg_search_library))
+    if _HAS_BS4 and _search_backend != "bing":
+        backends.append(("bing", _bing_search))
+    if _HAS_BS4 and _search_backend != "google":
+        backends.append(("google", _google_search))
+    if _HAS_BS4 and _search_backend != "ddg_html":
+        backends.append(("ddg_html", _ddg_search_html))
+
+    for name, fn in backends:
+        results = fn(query, max_results)
+        if results:
+            if _search_backend == "unknown":
+                _search_backend = name
+                logger.info("Auto-selected search backend: %s", name)
             return results
 
     return []
@@ -352,6 +358,103 @@ def _google_search(query: str, max_results: int = 8) -> list[dict]:
 
         except httpx.HTTPError as exc:
             logger.debug("Google HTTP error for %r: %s", query, exc)
+            if attempt < 2:
+                time.sleep((attempt + 1) * 2)
+            continue
+
+    return []
+
+
+def _bing_search(query: str, max_results: int = 8) -> list[dict]:
+    """Search Bing by scraping HTML results — most reliable scraping target."""
+    if not _HAS_BS4:
+        return []
+
+    encoded_q = quote_plus(query)
+    url = f"https://www.bing.com/search?q={encoded_q}&count={max_results}"
+
+    for attempt in range(3):
+        try:
+            client = _get_client()
+            resp = client.get(url)
+
+            if resp.status_code in (429, 503) or resp.status_code >= 400:
+                logger.debug("Bing returned %d for %r (attempt %d)",
+                             resp.status_code, query, attempt + 1)
+                _fresh_client()
+                time.sleep((attempt + 1) * 2)
+                continue
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            results = []
+
+            # Method 1: Standard Bing result items
+            for li in soup.select("li.b_algo"):
+                link = li.select_one("h2 a[href]")
+                if not link:
+                    link = li.select_one("a[href]")
+                if not link:
+                    continue
+                href = link.get("href", "")
+                if not href.startswith("http"):
+                    continue
+                if "bing.com" in href or "microsoft.com" in href:
+                    continue
+
+                title = link.get_text(strip=True)
+
+                snippet = ""
+                snip_el = li.select_one(".b_caption p")
+                if not snip_el:
+                    snip_el = li.select_one("p")
+                if snip_el:
+                    snippet = snip_el.get_text(strip=True)
+
+                results.append({
+                    "url": href,
+                    "title": title,
+                    "snippet": snippet,
+                })
+                if len(results) >= max_results:
+                    break
+
+            # Method 2: Broader link extraction if method 1 found nothing
+            if not results:
+                for a_tag in soup.find_all("a", href=True):
+                    href = a_tag["href"]
+                    if not href.startswith("http"):
+                        continue
+                    if "bing.com" in href or "microsoft.com" in href:
+                        continue
+                    if any(d in href for d in ["instagram.com", "facebook.com",
+                                               "tiktok.com", "yelp.com"]):
+                        title = a_tag.get_text(strip=True)
+                        results.append({
+                            "url": href,
+                            "title": title,
+                            "snippet": "",
+                        })
+                        if len(results) >= max_results:
+                            break
+
+            if results:
+                logger.debug("Bing search OK: %r → %d results", query, len(results))
+                return results
+
+            # Check for CAPTCHA
+            page_text = resp.text.lower()
+            if "captcha" in page_text or "unusual traffic" in page_text:
+                logger.debug("Bing CAPTCHA detected for %r", query)
+                _fresh_client()
+                time.sleep((attempt + 1) * 4)
+                continue
+
+            logger.debug("Bing returned page but 0 results parsed for %r", query)
+            return []
+
+        except httpx.HTTPError as exc:
+            logger.debug("Bing HTTP error for %r: %s", query, exc)
             if attempt < 2:
                 time.sleep((attempt + 1) * 2)
             continue
@@ -734,34 +837,60 @@ def discover_all_contacts(
     logger.info("Testing search backends ...")
     _search_backend = "unknown"
 
+    test_query = "Knuckleheads Sports Bar instagram"  # realistic query
+
     # Test DDGS library
     if _HAS_DDGS:
-        test = _ddg_search_library("test site:instagram.com", max_results=1)
+        logger.info("  Testing duckduckgo-search library ...")
+        test = _ddg_search_library(test_query, max_results=2)
         if test:
             _search_backend = "ddgs"
-            logger.info("Search backend: duckduckgo-search library (working)")
+            logger.info("  ✓ duckduckgo-search library works (%d results)", len(test))
         else:
-            logger.info("duckduckgo-search library returned 0 results — trying fallbacks")
+            logger.info("  ✗ duckduckgo-search library: 0 results")
+    else:
+        logger.info("  – duckduckgo-search library not installed")
+
+    # Test Bing HTML scraping (most reliable)
+    if _search_backend == "unknown" and _HAS_BS4:
+        logger.info("  Testing Bing HTML scraping ...")
+        test = _bing_search(test_query, max_results=2)
+        if test:
+            _search_backend = "bing"
+            logger.info("  ✓ Bing HTML scraping works (%d results)", len(test))
+        else:
+            logger.info("  ✗ Bing HTML scraping: 0 results")
 
     # Test Google HTML
     if _search_backend == "unknown" and _HAS_BS4:
-        test = _google_search("test site:instagram.com", max_results=1)
+        logger.info("  Testing Google HTML scraping ...")
+        test = _google_search(test_query, max_results=2)
         if test:
             _search_backend = "google"
-            logger.info("Search backend: Google HTML scraping (working)")
+            logger.info("  ✓ Google HTML scraping works (%d results)", len(test))
         else:
-            logger.info("Google HTML scraping returned 0 results — trying DDG HTML")
+            logger.info("  ✗ Google HTML scraping: 0 results")
 
     # Test DDG HTML
     if _search_backend == "unknown" and _HAS_BS4:
-        test = _ddg_search_html("test site:instagram.com", max_results=1)
+        logger.info("  Testing DuckDuckGo HTML scraping ...")
+        test = _ddg_search_html(test_query, max_results=2)
         if test:
             _search_backend = "ddg_html"
-            logger.info("Search backend: DuckDuckGo HTML scraping (working)")
+            logger.info("  ✓ DuckDuckGo HTML scraping works (%d results)", len(test))
+        else:
+            logger.info("  ✗ DuckDuckGo HTML scraping: 0 results")
+
+    if not _HAS_BS4:
+        logger.warning("beautifulsoup4 is not installed — HTML scraping backends unavailable")
 
     if _search_backend == "unknown":
         logger.warning("ALL search backends failed — contact discovery will return empty results")
+        logger.warning("This usually means search engines are blocking requests.")
+        logger.warning("Try again in a few minutes, or check your internet connection.")
         _search_backend = "none"
+    else:
+        logger.info("Using search backend: %s", _search_backend)
 
     for i, biz in enumerate(businesses):
         name = biz.get("business_name", "?")
