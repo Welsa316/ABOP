@@ -2,7 +2,8 @@
 messenger.py — Generate tailored outreach messages using the Claude API.
 
 Builds a compact context summary per business and asks Claude to write
-three message variants: email, contact-form, and DM.
+multiple message variants: email, contact-form, Instagram DM, follow-up,
+and call script.
 """
 
 import logging
@@ -26,6 +27,11 @@ ANGLE_DESCRIPTIONS = {
         "This business has a website URL but the site is unreachable or broken. "
         "Emphasise that their current web presence is not working and you can "
         "build them a reliable, professional site."
+    ),
+    "social_media_only": (
+        "This business relies only on social media (Instagram/Facebook) with no "
+        "central website. Emphasise that a website centralises their info, shows "
+        "up in Google searches, and converts interest into customers."
     ),
     "redesign": (
         "This business has an outdated-looking website with old HTML patterns. "
@@ -85,12 +91,8 @@ ANGLE_DESCRIPTIONS = {
 }
 
 
-def _build_prompt(biz: dict) -> str:
-    """
-    Build the Claude prompt for one business.
-
-    Summarises findings into a compact payload — no raw HTML.
-    """
+def _build_context_block(biz: dict) -> str:
+    """Build a compact context summary for the prompt."""
     name = biz.get("business_name", "the business")
     city = biz.get("city", "")
     state = biz.get("state", "")
@@ -104,9 +106,6 @@ def _build_prompt(biz: dict) -> str:
     angle = biz.get("pitch_angle", "general_improvement")
     score = biz.get("lead_score", 0)
 
-    angle_desc = ANGLE_DESCRIPTIONS.get(angle, ANGLE_DESCRIPTIONS["general_improvement"])
-
-    # Build context block
     context_lines = [
         f"Business name: {name}",
         f"Category: {category}",
@@ -124,18 +123,10 @@ def _build_prompt(biz: dict) -> str:
         context_lines.append(f"Detected issues: {', '.join(issues)}")
 
     # Discovered contact methods
-    instagram = biz.get("instagram", "")
-    facebook = biz.get("facebook", "")
-    tiktok = biz.get("tiktok", "")
-    email_found = biz.get("email", "")
-    if instagram:
-        context_lines.append(f"Instagram: {instagram}")
-    if facebook:
-        context_lines.append(f"Facebook: {facebook}")
-    if tiktok:
-        context_lines.append(f"TikTok: {tiktok}")
-    if email_found:
-        context_lines.append(f"Email: {email_found}")
+    for field in ("instagram", "facebook", "tiktok", "email"):
+        val = biz.get(field, "")
+        if val:
+            context_lines.append(f"{field.title()}: {val}")
 
     contact_count = biz.get("contact_methods_found", 0)
     if contact_count:
@@ -144,49 +135,97 @@ def _build_prompt(biz: dict) -> str:
     context_lines.append(f"Lead score: {score}")
     context_lines.append(f"Recommended angle: {angle}")
 
-    context_block = "\n".join(context_lines)
+    # Score summary if available
+    summary = biz.get("score_summary", "")
+    if summary:
+        context_lines.append(f"Score analysis: {summary}")
 
-    prompt = f"""You are helping a freelance web developer write outreach messages to local businesses that currently have NO website.
+    return "\n".join(context_lines)
+
+
+def _build_prompt(biz: dict) -> str:
+    """Build the Claude prompt for generating all message types."""
+    name = biz.get("business_name", "the business")
+    angle = biz.get("pitch_angle", "general_improvement")
+    angle_desc = ANGLE_DESCRIPTIONS.get(angle, ANGLE_DESCRIPTIONS["general_improvement"])
+    context_block = _build_context_block(biz)
+
+    # Determine which channels to generate
+    channels = config.MESSAGE_CHANNELS
+
+    format_sections = []
+    if channels.get("email"):
+        format_sections.append("""SUBJECT:
+[Email subject line — short, specific, not spammy]
+
+EMAIL:
+[Your cold email message — 3-5 sentences. Professional, personal, direct.]""")
+
+    if channels.get("contact_form"):
+        format_sections.append("""CONTACT_FORM:
+[Contact-form message — slightly shorter and more casual than email]""")
+
+    if channels.get("instagram_dm"):
+        format_sections.append("""DM:
+[Instagram/social DM — 2-3 sentences max, very casual and direct, no subject line]""")
+
+    if channels.get("follow_up"):
+        format_sections.append("""FOLLOW_UP:
+[Follow-up message if no reply after 5-7 days — friendly check-in, 2-3 sentences, reference the original message briefly, no pressure]""")
+
+    if channels.get("call_script"):
+        format_sections.append("""CALL_SCRIPT:
+[Phone call opener — what to say in the first 15 seconds. Introduce yourself, mention why you're calling, ask if they have a moment. 3-4 sentences max.]""")
+
+    format_block = "\n\n".join(format_sections)
+
+    prompt = f"""You are helping a freelance web developer write outreach messages to a local business.
 
 BUSINESS CONTEXT:
 {context_block}
 
-YOUR GOAL:
-This business does not have a website. You want to offer to build them a professional, modern, mobile-friendly website that helps customers find them, builds trust, and grows their business. Tailor the message to their specific business type (e.g. a restaurant needs an online menu and ordering, a salon needs online booking, etc.).
+PITCH ANGLE:
+{angle_desc}
 
-Write exactly three outreach messages for this business. Each must:
+YOUR GOAL:
+Write personalized outreach messages for this business. Each must:
 - Mention the business by name ("{name}")
 - Sound like a real person wrote it — natural, conversational, human
-- Be concise (3-5 sentences max)
+- Be concise (respect the length limits for each format)
 - Be professional, friendly, and direct
-- Mention a specific benefit relevant to their business type (e.g. "customers could see your menu and order online" for a restaurant)
+- Mention a specific benefit relevant to their business type
+- Reference something specific you noticed about their business (reviews, category, social presence, etc.)
 - NOT sound like spam or a mass template
 - NOT promise fake audits, made-up statistics, or guaranteed results
 - NOT use hype words like "skyrocket", "explosive growth", "dominate"
 - NOT be pushy or overly salesy — just a helpful introduction
+- NOT mention that you "ran an audit" or "analyzed their business" — just offer help naturally
 
 Format your response EXACTLY like this (keep the labels):
 
-EMAIL:
-[Your cold email message here]
-
-CONTACT_FORM:
-[Your contact-form message here — slightly shorter and more casual]
-
-DM:
-[Your DM message — 2-3 sentences max, very casual and direct]"""
+{format_block}"""
 
     return prompt
 
 
 def _parse_response(text: str) -> dict:
-    """Parse Claude's response into the three message types."""
-    messages = {"email": "", "contact_form": "", "dm": ""}
+    """Parse Claude's response into message types."""
+    messages = {
+        "subject": "",
+        "email": "",
+        "contact_form": "",
+        "dm": "",
+        "follow_up": "",
+        "call_script": "",
+    }
 
     sections = {
+        "SUBJECT:": "subject",
         "EMAIL:": "email",
         "CONTACT_FORM:": "contact_form",
         "DM:": "dm",
+        "FOLLOW_UP:": "follow_up",
+        "CALL_SCRIPT:": "call_script",
     }
 
     lines = text.strip().split("\n")
@@ -201,7 +240,6 @@ def _parse_response(text: str) -> dict:
                 if current_key:
                     messages[current_key] = "\n".join(current_lines).strip()
                 current_key = key
-                # Grab anything after the label on the same line
                 remainder = stripped[len(label):].strip()
                 current_lines = [remainder] if remainder else []
                 matched = True
@@ -215,23 +253,50 @@ def _parse_response(text: str) -> dict:
     return messages
 
 
+def _call_claude(client, prompt: str) -> str:
+    """Make a single Claude API call with retry on rate limit."""
+    try:
+        response = client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+    except anthropic.RateLimitError:
+        logger.warning("Rate limited — pausing 30s before retry")
+        time.sleep(30)
+        response = client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=1200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+
+
 def generate_messages(businesses: list[dict],
                       score_threshold: int | None = None,
-                      max_messages: int = 0) -> list[dict]:
+                      max_messages: int = 0,
+                      progress_callback=None) -> list[dict]:
     """
     Generate outreach messages for qualifying businesses using Claude API.
 
     Modifies each business dict in-place, adding:
-      email_message, contact_form_message, dm_message, message_error
+      email_subject, email_message, contact_form_message, dm_message,
+      follow_up_message, call_script, message_error
 
     Returns the same list.
     """
+    # Initialize all message fields
+    for biz in businesses:
+        for field in ("email_subject", "email_message", "contact_form_message",
+                      "dm_message", "follow_up_message", "call_script",
+                      "message_error"):
+            if field not in biz:
+                biz[field] = ""
+
     if not config.ANTHROPIC_API_KEY:
         logger.error("ANTHROPIC_API_KEY not set — skipping message generation")
         for biz in businesses:
-            biz["email_message"] = ""
-            biz["contact_form_message"] = ""
-            biz["dm_message"] = ""
             biz["message_error"] = "api_key_missing"
         return businesses
 
@@ -241,68 +306,55 @@ def generate_messages(businesses: list[dict],
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
     generated = 0
+    total = len(businesses)
     for i, biz in enumerate(businesses):
-        # Default empty
-        biz["email_message"] = ""
-        biz["contact_form_message"] = ""
-        biz["dm_message"] = ""
-        biz["message_error"] = ""
+        name = biz.get("business_name", f"#{i}")
 
         # Skip low-score leads
         if biz.get("lead_score", 0) < threshold:
             biz["message_error"] = "below_threshold"
+            if progress_callback:
+                progress_callback(i, total, name, "skipped")
             continue
 
         # Skip chains
         if biz.get("pitch_angle") == "skip_chain":
             biz["message_error"] = "chain_skipped"
+            if progress_callback:
+                progress_callback(i, total, name, "skipped")
             continue
 
         # Respect limit
         if limit and generated >= limit:
             biz["message_error"] = "limit_reached"
+            if progress_callback:
+                progress_callback(i, total, name, "skipped")
             continue
 
         prompt = _build_prompt(biz)
-        name = biz.get("business_name", f"#{i}")
 
         try:
             logger.info("Generating messages for: %s (score=%d)",
                         name, biz.get("lead_score", 0))
-            response = client.messages.create(
-                model=config.CLAUDE_MODEL,
-                max_tokens=800,
-                messages=[{"role": "user", "content": prompt}],
-            )
-            text = response.content[0].text
+            text = _call_claude(client, prompt)
             parsed = _parse_response(text)
+
+            biz["email_subject"] = parsed["subject"]
             biz["email_message"] = parsed["email"]
             biz["contact_form_message"] = parsed["contact_form"]
             biz["dm_message"] = parsed["dm"]
+            biz["follow_up_message"] = parsed["follow_up"]
+            biz["call_script"] = parsed["call_script"]
             generated += 1
 
-        except anthropic.RateLimitError:
-            logger.warning("Rate limited — pausing 30s before retrying %s", name)
-            time.sleep(30)
-            try:
-                response = client.messages.create(
-                    model=config.CLAUDE_MODEL,
-                    max_tokens=800,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                text = response.content[0].text
-                parsed = _parse_response(text)
-                biz["email_message"] = parsed["email"]
-                biz["contact_form_message"] = parsed["contact_form"]
-                biz["dm_message"] = parsed["dm"]
-                generated += 1
-            except Exception as exc:
-                logger.error("Retry also failed for %s: %s", name, exc)
-                biz["message_error"] = f"api_error: {exc}"
+            if progress_callback:
+                progress_callback(i, total, name, "generated")
 
         except Exception as exc:
             logger.error("Claude API error for %s: %s", name, exc)
             biz["message_error"] = f"api_error: {exc}"
+            if progress_callback:
+                progress_callback(i, total, name, "error")
 
     logger.info("Generated messages for %d / %d businesses", generated, len(businesses))
     return businesses

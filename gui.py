@@ -83,7 +83,7 @@ class LeadEngineApp:
 
     def __init__(self) -> None:
         self.root = Tk()
-        self.root.title("Lead Engine — Lead Scoring & Outreach Generator")
+        self.root.title("Lead Engine — Lead Intelligence CRM")
         self.root.geometry("920x720")
         self.root.minsize(750, 550)
         self.root.configure(bg=BG)
@@ -459,6 +459,11 @@ class LeadEngineApp:
                         biz["email"] = info.email
                         biz["yelp"] = info.yelp
                         biz["contact_methods_found"] = info.contact_methods_found
+                        biz["best_contact_channel"] = info.best_contact_channel
+                        biz["instagram_confidence"] = info.instagram_confidence
+                        biz["facebook_confidence"] = info.facebook_confidence
+                        biz["tiktok_confidence"] = info.tiktok_confidence
+                        biz["email_confidence"] = info.email_confidence
                 found_any = sum(1 for c in contacts.values() if c.contact_methods_found > 0)
                 self._log(f"      Found contacts for {found_any}/{len(businesses)} businesses.")
             self._set_progress(50)
@@ -470,6 +475,8 @@ class LeadEngineApp:
             top = businesses[0] if businesses else {}
             self._log(f"      Top lead: {top.get('business_name', '?')} "
                       f"(score={top.get('lead_score', 0)})")
+            if top.get("recommended_pitch_label"):
+                self._log(f"      Angle: {top.get('recommended_pitch_label')}")
             self._set_progress(65)
 
             # ---- Stage 5: AI messages ----
@@ -478,9 +485,10 @@ class LeadEngineApp:
                 self._set_progress(85, f"Skipping AI messages ({reason})")
                 self._log(f"[5/5] Skipping AI messages ({reason}).")
                 for biz in businesses:
-                    biz["email_message"] = ""
-                    biz["contact_form_message"] = ""
-                    biz["dm_message"] = ""
+                    for field in ("email_subject", "email_message",
+                                  "contact_form_message", "dm_message",
+                                  "follow_up_message", "call_script"):
+                        biz[field] = ""
                     biz["message_error"] = "skipped" if skip_ai else "api_key_missing"
             else:
                 self._set_progress(70, "Generating outreach messages ...")

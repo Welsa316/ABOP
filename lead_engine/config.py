@@ -85,6 +85,33 @@ RATING_THRESHOLDS = {
 }
 
 # ---------------------------------------------------------------------------
+# Sub-score category mappings
+# ---------------------------------------------------------------------------
+# Each sub-score sums the weights of its member keys from SCORE_WEIGHTS.
+# Keys that don't exist in SCORE_WEIGHTS for a given lead are just skipped.
+SUB_SCORE_CATEGORIES = {
+    "opportunity_score": [
+        "no_website", "site_unreachable", "social_media_only",
+        "no_ssl", "no_viewport", "slow_response", "thin_content",
+        "placeholder_site", "no_contact_info", "no_cta",
+        "no_online_ordering", "no_booking", "no_menu", "outdated_design",
+    ],
+    "reputation_score": [
+        "high_reviews_bonus", "very_high_reviews_bonus",
+        "good_rating_bonus", "excellent_rating_bonus",
+    ],
+    "contactability_score": [
+        "instagram_found", "facebook_found", "tiktok_found",
+        "email_found", "yelp_found",
+    ],
+    "digital_weakness_score": [
+        "no_website", "site_unreachable", "social_media_only",
+        "no_ssl", "no_viewport", "thin_content", "placeholder_site",
+        "outdated_design",
+    ],
+}
+
+# ---------------------------------------------------------------------------
 # Known chains / franchises  (lowercase substrings)
 # ---------------------------------------------------------------------------
 CHAIN_KEYWORDS = [
@@ -156,3 +183,56 @@ NO_WEBSITE_ONLY = True
 # ---------------------------------------------------------------------------
 MESSAGE_SCORE_THRESHOLD = 10   # only generate messages for scores >= this
 MAX_MESSAGES_PER_RUN = 0       # 0 = unlimited; set to e.g. 50 to cap costs
+
+# Message types to generate (toggle individual channels)
+MESSAGE_CHANNELS = {
+    "email": True,
+    "contact_form": True,
+    "instagram_dm": True,
+    "follow_up": True,
+    "call_script": True,
+}
+
+# ---------------------------------------------------------------------------
+# CRM pipeline statuses
+# ---------------------------------------------------------------------------
+CRM_STATUSES = [
+    "new",
+    "needs_review",
+    "approved",
+    "contacted",
+    "replied",
+    "follow_up_due",
+    "closed_won",
+    "closed_lost",
+]
+DEFAULT_CRM_STATUS = "new"
+
+# ---------------------------------------------------------------------------
+# Excel output settings
+# ---------------------------------------------------------------------------
+EXCEL_FILENAME = "lead_tracker.xlsx"
+EXCEL_HIGH_SCORE_THRESHOLD = 50   # green highlight threshold
+EXCEL_MEDIUM_SCORE_THRESHOLD = 30  # yellow highlight threshold
+
+# ---------------------------------------------------------------------------
+# Pitch angle descriptions (human-readable)
+# ---------------------------------------------------------------------------
+PITCH_ANGLE_LABELS = {
+    "needs_new_website":    "No website, strong reviews — needs a professional web presence",
+    "site_broken":          "Website is broken/unreachable — urgent fix needed",
+    "redesign":             "Outdated website — could use a modern redesign",
+    "mobile_improvement":   "Website isn't mobile-friendly — losing phone visitors",
+    "speed_improvement":    "Website loads slowly — hurting user experience",
+    "cta_improvement":      "No clear call-to-action — missing customer conversions",
+    "contact_improvement":  "Hard to find contact info — customers can't reach them",
+    "content_improvement":  "Very thin website content — not building trust",
+    "security_upgrade":     "No HTTPS — looks untrustworthy to visitors",
+    "add_menu":             "Restaurant without online menu — customers leave",
+    "add_ordering":         "Restaurant without online ordering — missing revenue",
+    "add_booking":          "Service business without online booking — losing appointments",
+    "social_media_only":    "Active social media but no central website — limiting discoverability",
+    "general_improvement":  "Good reputation, weak online presence — big opportunity",
+    "low_priority":         "Lower priority — moderate digital needs",
+    "skip_chain":           "Chain/franchise — not a target",
+}
