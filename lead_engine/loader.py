@@ -199,13 +199,4 @@ def load_csv(filepath: str | Path) -> list[dict]:
 
     logger.info("Loaded %d businesses (%d duplicates removed)", len(businesses), dupes)
 
-    # Filter to no-website businesses only when that mode is active
-    from . import config
-    if config.NO_WEBSITE_ONLY:
-        before = len(businesses)
-        businesses = [b for b in businesses if not b["website"]]
-        filtered = before - len(businesses)
-        logger.info("NO_WEBSITE_ONLY mode: kept %d businesses without websites "
-                     "(%d with websites filtered out)", len(businesses), filtered)
-
     return businesses
