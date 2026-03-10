@@ -42,12 +42,23 @@ def main():
             if child.is_dir() and child.name.startswith(("tcl", "tk")):
                 tcl_tk_data += ["--add-data", f"{child};{child.name}"]
 
+    # Find and bundle the Python DLL explicitly
+    # (fixes "Failed to load Python DLL" on some Windows machines)
+    add_python_dll = []
+    for search_dir in [python_dir, Path(sys.prefix), Path(sys.base_prefix)]:
+        matches = list(search_dir.glob("python3*.dll"))
+        if matches:
+            add_python_dll = ["--add-binary", f"{matches[0]};."]
+            print(f"  Found Python DLL: {matches[0]}")
+            break
+
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name", "LeadEngine",
         "--windowed",
         "--noconfirm",
         "--add-data", "lead_engine;lead_engine",
+        *add_python_dll,
         *tcl_tk_data,
         "--collect-all", "tkinter",
         "--hidden-import", "httpx",
