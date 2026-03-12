@@ -24,9 +24,13 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).resolve().parent
 
+import asyncio
+
 from lead_engine.loader import load_csv
+from lead_engine.analyzer import analyze_websites
 from lead_engine.scorer import score_all
 from lead_engine.writer import write_outputs
+from lead_engine.contact_discovery import discover_all_contacts
 
 # ---------------------------------------------------------------------------
 # Color palette
@@ -279,31 +283,54 @@ class LeadEngineApp:
 
             # ---- Stage 1: Load CSV ----
             self._set_progress(10, "Loading CSV ...")
-            self._log("[1/3] Loading CSV ...")
+            self._log("[1/5] Loading CSV ...")
             businesses = load_csv(csv_path)
             if limit:
                 businesses = businesses[:limit]
             self._log(f"      Loaded {len(businesses)} businesses.")
 
-            no_website = sum(1 for b in businesses if not b.get("website"))
-            has_website = len(businesses) - no_website
-            self._log(f"      {no_website} without website, {has_website} with website.")
-            self._set_progress(30)
+            no_listed = sum(1 for b in businesses if not b.get("website"))
+            self._log(f"      {no_listed} without listed website — will attempt discovery.")
+            self._set_progress(15)
 
-            # ---- Stage 2: Score ----
-            self._set_progress(40, "Scoring leads ...")
-            self._log("[2/3] Scoring leads ...")
-            businesses = score_all(businesses)
+            # ---- Stage 2: Website discovery & analysis ----
+            self._set_progress(20, "Discovering websites ...")
+            self._log("[2/5] Analysing & discovering websites ...")
+            analyses = asyncio.run(analyze_websites(businesses))
+            listed = sum(1 for a in analyses.values() if a.website_status == "listed")
+            discovered = sum(1 for a in analyses.values() if a.website_status == "discovered")
+            not_found = sum(1 for a in analyses.values() if a.website_status == "not_found")
+            self._log(f"      {listed} listed, {discovered} discovered, {not_found} not found.")
+            self._set_progress(35)
+
+            # ---- Stage 3: Discover emails ----
+            self._set_progress(40, "Discovering emails ...")
+            self._log("[3/5] Discovering contact emails ...")
+            self._log("      Searching websites & DuckDuckGo (may take a minute) ...")
+            contacts = discover_all_contacts(businesses)
+            for i, biz in enumerate(businesses):
+                info = contacts.get(i)
+                if info:
+                    biz["email"] = info.email
+                    biz["email_confidence"] = info.email_confidence
+            emails_found = sum(1 for c in contacts.values() if c.email)
+            self._log(f"      Found emails for {emails_found}/{len(businesses)} businesses.")
+            self._set_progress(55)
+
+            # ---- Stage 4: Score ----
+            self._set_progress(60, "Scoring leads ...")
+            self._log("[4/5] Scoring leads ...")
+            businesses = score_all(businesses, analyses)
 
             if businesses:
                 top = businesses[0]
                 self._log(f"      Top lead: {top.get('business_name', '?')} "
                           f"(score={top.get('lead_score', 0)})")
-            self._set_progress(60)
+            self._set_progress(75)
 
-            # ---- Stage 3: Write Excel ----
-            self._set_progress(70, "Writing Excel ...")
-            self._log("[3/3] Writing Excel tracker ...")
+            # ---- Stage 5: Write Excel ----
+            self._set_progress(80, "Writing Excel ...")
+            self._log("[5/5] Writing Excel tracker ...")
             files = write_outputs(businesses, output_dir)
             for label, path in files.items():
                 self._log(f"      {label} -> {path}")
@@ -313,13 +340,18 @@ class LeadEngineApp:
             self._log(f"\nDone in {elapsed:.1f}s!")
 
             self._log(f"\nTotal: {len(businesses)} leads")
-            self._log(f"  {no_website} without website (highest priority)")
-            self._log(f"  {has_website} with website")
+            self._log(f"  {listed} with listed website")
+            self._log(f"  {discovered} with discovered website (not on Google)")
+            self._log(f"  {not_found} no website found (highest priority)")
+            self._log(f"  {emails_found} with email found")
             self._log(f"\nTop 5:")
             for b in businesses[:5]:
-                website_tag = "" if b.get("has_website") else " [NO WEBSITE]"
+                status = b.get("website_status", "not_found")
+                tag = {"discovered": " [UNLISTED SITE]",
+                       "not_found": " [NO SITE FOUND]"}.get(status, "")
+                email_tag = f" [{b.get('email', '')}]" if b.get("email") else ""
                 self._log(f"  [{b.get('lead_score', 0):>3} pts]  "
-                          f"{b.get('business_name', '?')}{website_tag}")
+                          f"{b.get('business_name', '?')}{tag}{email_tag}")
 
         except Exception as exc:
             self._log(f"\nERROR: {exc}")
