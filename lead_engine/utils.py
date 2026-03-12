@@ -2,8 +2,10 @@
 utils.py — Small helper functions used across modules.
 """
 
+import json
 import re
 import logging
+from pathlib import Path
 from urllib.parse import urlparse
 
 logger = logging.getLogger("lead_engine")
@@ -48,3 +50,11 @@ def safe_float(val, default: float = 0.0) -> float:
         return float(val)
     except (ValueError, TypeError):
         return default
+
+
+def save_json(data, path) -> None:
+    """Write *data* as JSON to *path*, creating parent dirs as needed."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, default=str)

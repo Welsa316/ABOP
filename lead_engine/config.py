@@ -17,8 +17,9 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "output"
 # Scoring weights  (tweak these to taste)
 # ---------------------------------------------------------------------------
 SCORE_WEIGHTS = {
-    # --- Website existence ---
-    "no_website":              40,   # no URL at all
+    # --- Website status ---
+    "no_website_found":        40,   # genuinely can't find a website
+    "unlisted_website":        25,   # has site but not linked on Google
 
     # --- Business attractiveness bonuses ---
     "high_reviews_bonus":       8,   # 100+ reviews
@@ -36,6 +37,23 @@ RATING_THRESHOLDS = {
     "good": 4.5,
     "excellent": 4.8,
 }
+
+# ---------------------------------------------------------------------------
+# Network / analysis settings
+# ---------------------------------------------------------------------------
+REQUEST_TIMEOUT = 10          # seconds per HTTP request
+MAX_CONCURRENT_REQUESTS = 10  # simultaneous website checks
+
+# ---------------------------------------------------------------------------
+# Messaging settings
+# ---------------------------------------------------------------------------
+MESSAGE_SCORE_THRESHOLD = 30   # min score for AI message generation
+ANTHROPIC_API_KEY = ""         # set via .env or at runtime
+
+# ---------------------------------------------------------------------------
+# Pipeline flags
+# ---------------------------------------------------------------------------
+NO_WEBSITE_ONLY = False        # if True, skip website analysis stage
 
 # ---------------------------------------------------------------------------
 # Excel output settings

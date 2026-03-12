@@ -33,7 +33,7 @@ EXCEL_COLUMNS = [
     ("rating",           "Rating",          8),
     ("review_count",     "Reviews",        10),
     ("lead_score",       "Lead Score",     11),
-    ("has_website",      "Has Website",    13),
+    ("website_status",   "Website Status", 15),
     ("notes",            "Notes",          30),
 ]
 
@@ -54,7 +54,9 @@ def _biz_to_row(biz: dict) -> dict:
         "rating":           biz.get("rating", ""),
         "review_count":     biz.get("review_count", ""),
         "lead_score":       biz.get("lead_score", 0),
-        "has_website":      "Yes" if biz.get("has_website") else "No",
+        "website_status":   {"listed": "Listed", "discovered": "Discovered",
+                            "not_found": "Not Found"}.get(
+                            biz.get("website_status", ""), "Not Found"),
         "notes":            biz.get("notes", ""),
     }
 
