@@ -298,7 +298,7 @@ def run_ingest_pipeline(file_path: str = "") -> dict:
     logger.info("Ingested %d new leads (%d duplicates skipped)", inserted, skipped)
 
     # Step 2: Generate drafts
-    if inserted > 0 and cfg.ANTHROPIC_API_KEY:
+    if cfg.ANTHROPIC_API_KEY:
         success, errors = generate_all_drafts()
         summary["drafts_generated"] = success
         summary["draft_errors"] = errors
