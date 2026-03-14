@@ -49,6 +49,9 @@ def main():
         "--hidden-import", "openpyxl",
         "--hidden-import", "anthropic",
         "--hidden-import", "bs4",
+        "--hidden-import", "resend",
+        "--hidden-import", "googlesearch",
+        "--hidden-import", "sqlite3",
         "gui.py",
     ]
 

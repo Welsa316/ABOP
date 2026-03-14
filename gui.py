@@ -46,6 +46,15 @@ from lead_engine.messenger import generate_messages
 from lead_engine.writer import write_outputs, load_contacted
 from lead_engine.contact_discovery import discover_all_contacts
 
+# Outreach system
+from lead_engine.outreach import outreach_config as outreach_cfg
+from lead_engine.outreach.campaign import (
+    run_ingest_pipeline,
+    approve_all_reviewed,
+    send_approved,
+    get_campaign_stats,
+)
+
 # ---------------------------------------------------------------------------
 # Color palette
 # ---------------------------------------------------------------------------
@@ -83,7 +92,17 @@ class LeadEngineApp:
         self.skip_audit = BooleanVar(value=False)
         self.skip_contacts = BooleanVar(value=False)
         self.skip_ai = BooleanVar(value=False)
+        self.auto_send = BooleanVar(value=False)
         self.running = False
+
+        # Outreach config — load from .env
+        self.resend_key = StringVar(value=os.getenv("RESEND_API_KEY", ""))
+        self.from_email = StringVar(value=os.getenv("OUTREACH_FROM_EMAIL", ""))
+        self.from_name = StringVar(value=os.getenv("OUTREACH_FROM_NAME", ""))
+        self.your_name = StringVar(value=os.getenv("OUTREACH_YOUR_NAME", ""))
+        self.your_business = StringVar(value=os.getenv("OUTREACH_YOUR_BUSINESS", ""))
+        self.your_service = StringVar(value=os.getenv("OUTREACH_YOUR_SERVICE", ""))
+        self.your_website = StringVar(value=os.getenv("OUTREACH_YOUR_WEBSITE", ""))
 
         self._build_ui()
         self._style_widgets()
@@ -176,8 +195,40 @@ class LeadEngineApp:
         ttk.Checkbutton(cb_frame, text="Skip AI Messages",
                         variable=self.skip_ai, style="Card.TCheckbutton").pack(
             side=LEFT, padx=(0, 16))
+        ttk.Checkbutton(cb_frame, text="Send Emails After Run",
+                        variable=self.auto_send, style="Card.TCheckbutton").pack(
+            side=LEFT, padx=(0, 16))
 
         grid.columnconfigure(1, weight=1)
+
+        # -- Outreach settings (collapsible) --
+        row3 = ttk.LabelFrame(body, text="  Email Outreach Settings  ",
+                               style="Card.TLabelframe")
+        row3.pack(fill=X, pady=(0, 10))
+
+        og = ttk.Frame(row3, style="Card.TFrame")
+        og.pack(fill=X, padx=12, pady=10)
+
+        outreach_fields = [
+            (0, "Resend API Key:", self.resend_key, "(resend.com — free 100/day)"),
+            (1, "From Email:", self.from_email, "(verified in Resend dashboard)"),
+            (2, "From Name:", self.from_name, "(your display name)"),
+            (3, "Your Name:", self.your_name, ""),
+            (4, "Your Business:", self.your_business, ""),
+            (5, "Your Service:", self.your_service, "(what you offer)"),
+            (6, "Your Website:", self.your_website, ""),
+        ]
+        for r, label, var, hint in outreach_fields:
+            ttk.Label(og, text=label, style="Label.TLabel").grid(
+                row=r, column=0, sticky=W, padx=(0, 8), pady=2)
+            show = "*" if "Key" in label else None
+            e = ttk.Entry(og, textvariable=var, width=45, style="Input.TEntry",
+                          show=show or "")
+            e.grid(row=r, column=1, sticky=EW, pady=2)
+            if hint:
+                ttk.Label(og, text=hint, style="Dim.TLabel").grid(
+                    row=r, column=2, sticky=W, padx=(6, 0), pady=2)
+        og.columnconfigure(1, weight=1)
 
         # -- Run button --
         btn_frame = ttk.Frame(body, style="Body.TFrame")
@@ -185,6 +236,9 @@ class LeadEngineApp:
         self.run_btn = ttk.Button(btn_frame, text="  Run Lead Engine  ",
                                    command=self._on_run, style="Run.TButton")
         self.run_btn.pack(side=LEFT)
+        self.send_btn = ttk.Button(btn_frame, text="  Send Emails  ",
+                                    command=self._on_send, style="Accent.TButton")
+        self.send_btn.pack(side=LEFT, padx=(12, 0))
         self.open_btn = ttk.Button(btn_frame, text="Open Output Folder",
                                     command=self._open_output, style="Accent.TButton")
         self.open_btn.pack(side=LEFT, padx=(12, 0))
@@ -361,6 +415,146 @@ class LeadEngineApp:
         return True
 
     # ------------------------------------------------------------------
+    # Outreach config helpers
+    # ------------------------------------------------------------------
+    def _save_outreach_config(self) -> None:
+        """Persist outreach settings to .env and update runtime config."""
+        env_vars = {
+            "RESEND_API_KEY": self.resend_key.get().strip(),
+            "OUTREACH_FROM_EMAIL": self.from_email.get().strip(),
+            "OUTREACH_FROM_NAME": self.from_name.get().strip(),
+            "OUTREACH_YOUR_NAME": self.your_name.get().strip(),
+            "OUTREACH_YOUR_BUSINESS": self.your_business.get().strip(),
+            "OUTREACH_YOUR_SERVICE": self.your_service.get().strip(),
+            "OUTREACH_YOUR_WEBSITE": self.your_website.get().strip(),
+        }
+
+        # Update runtime config
+        outreach_cfg.RESEND_API_KEY = env_vars["RESEND_API_KEY"]
+        outreach_cfg.FROM_EMAIL = env_vars["OUTREACH_FROM_EMAIL"]
+        outreach_cfg.FROM_NAME = env_vars["OUTREACH_FROM_NAME"]
+        outreach_cfg.ANTHROPIC_API_KEY = config.ANTHROPIC_API_KEY
+        outreach_cfg.YOUR_NAME = env_vars["OUTREACH_YOUR_NAME"]
+        outreach_cfg.YOUR_BUSINESS = env_vars["OUTREACH_YOUR_BUSINESS"]
+        outreach_cfg.YOUR_SERVICE = env_vars["OUTREACH_YOUR_SERVICE"]
+        outreach_cfg.YOUR_WEBSITE = env_vars["OUTREACH_YOUR_WEBSITE"]
+
+        for k, v in env_vars.items():
+            os.environ[k] = v
+
+        # Save to .env file
+        env_lines = []
+        if _env_path.exists():
+            env_lines = _env_path.read_text(encoding="utf-8").splitlines()
+
+        for key, value in env_vars.items():
+            if not value:
+                continue
+            found = False
+            for i, line in enumerate(env_lines):
+                if line.strip().startswith(key + "=") or line.strip().startswith(key + " ="):
+                    env_lines[i] = f"{key}={value}"
+                    found = True
+                    break
+            if not found:
+                env_lines.append(f"{key}={value}")
+
+        _env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+
+    def _validate_outreach_config(self) -> str | None:
+        """Check outreach config is ready. Returns error message or None."""
+        if not self.resend_key.get().strip():
+            return "Resend API Key is required.\nGet one free at resend.com"
+        if not self.from_email.get().strip():
+            return "From Email is required.\nThis must be verified in your Resend dashboard."
+        return None
+
+    # ------------------------------------------------------------------
+    # Send Emails action
+    # ------------------------------------------------------------------
+    def _on_send(self) -> None:
+        """Handle Send Emails button click."""
+        error = self._validate_outreach_config()
+        if error:
+            messagebox.showwarning("Outreach Config Missing", error)
+            return
+
+        output_dir = self.output_dir.get().strip() or str(BASE_DIR / "output")
+        excel_path = Path(output_dir) / "lead_tracker.xlsx"
+        if not excel_path.exists():
+            messagebox.showwarning(
+                "No Leads",
+                "No lead_tracker.xlsx found.\nRun the lead engine first to generate leads.",
+            )
+            return
+
+        self._set_running(True)
+        thread = threading.Thread(target=self._run_send_pipeline, daemon=True)
+        thread.start()
+
+    def _run_send_pipeline(self) -> None:
+        """Run the outreach send pipeline in a background thread."""
+        try:
+            self._save_outreach_config()
+            output_dir = self.output_dir.get().strip() or str(BASE_DIR / "output")
+            excel_path = str(Path(output_dir) / "lead_tracker.xlsx")
+
+            # Point outreach config at correct paths
+            outreach_cfg.LEAD_EXCEL_PATH = excel_path
+            outreach_cfg.DB_PATH = str(Path(output_dir) / "outreach.db")
+
+            # Step 1: Ingest leads from Excel into outreach DB
+            self._set_progress(10, "Ingesting leads ...")
+            self._log("\n=== Email Outreach ===")
+            self._log("[1/4] Ingesting leads from Excel ...")
+            summary = run_ingest_pipeline(excel_path)
+            self._log(f"      New leads imported: {summary['ingested']}")
+            self._log(f"      Duplicates skipped: {summary['skipped_duplicates']}")
+            self._log(f"      Drafts generated:   {summary['drafts_generated']}")
+            if summary.get("draft_errors"):
+                self._log(f"      Draft errors:       {summary['draft_errors']}")
+            self._set_progress(40)
+
+            # Step 2: Auto-approve all reviewed leads
+            self._set_progress(50, "Approving leads ...")
+            self._log("[2/4] Auto-approving leads ...")
+            approved_count = approve_all_reviewed()
+            self._log(f"      Approved {approved_count} leads.")
+            self._set_progress(60)
+
+            # Step 3: Show stats before sending
+            stats = get_campaign_stats()
+            sendable = stats.get("approved", 0)
+            self._log(f"[3/4] Ready to send {sendable} emails")
+            self._log(f"      From: {outreach_cfg.FROM_NAME} <{outreach_cfg.FROM_EMAIL}>")
+            self._log(f"      Daily cap: {outreach_cfg.DAILY_SEND_CAP}")
+
+            if sendable == 0:
+                self._log("      No approved leads to send.")
+                self._set_progress(100, "No emails to send")
+                return
+
+            # Step 4: Send
+            self._set_progress(70, f"Sending {sendable} emails ...")
+            self._log(f"[4/4] Sending emails ...")
+            sent, failed, skipped = send_approved(dry_run=False)
+
+            self._set_progress(100, "Outreach complete!")
+            self._log(f"\n=== Send Results ===")
+            self._log(f"      Sent:    {sent}")
+            self._log(f"      Failed:  {failed}")
+            self._log(f"      Skipped: {skipped}")
+
+            if sent > 0:
+                self._log(f"\nEmails sent successfully!")
+
+        except Exception as exc:
+            self._log(f"\nOUTREACH ERROR: {exc}")
+            self._set_progress(0, f"Send error: {exc}")
+        finally:
+            self._set_running(False)
+
+    # ------------------------------------------------------------------
     # Pipeline (runs in background thread)
     # ------------------------------------------------------------------
     def _on_run(self) -> None:
@@ -531,6 +725,14 @@ class LeadEngineApp:
                 msg_tag = " [MSG]" if b.get("email_subject") else ""
                 self._log(f"  [{b.get('lead_score', 0):>3} pts]  "
                           f"{b.get('business_name', '?')}{tag}{email_tag}{msg_tag}")
+
+            # ---- Auto-send if enabled ----
+            if self.auto_send.get():
+                error = self._validate_outreach_config()
+                if error:
+                    self._log(f"\nSkipping auto-send: {error}")
+                else:
+                    self._run_send_pipeline()
 
         except Exception as exc:
             self._log(f"\nERROR: {exc}")
