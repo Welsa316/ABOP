@@ -236,17 +236,10 @@ def main() -> None:
         for i, biz in enumerate(businesses):
             info = contacts.get(i)
             if info:
-                biz["instagram"] = info.instagram
-                biz["facebook"] = info.facebook
-                biz["tiktok"] = info.tiktok
                 biz["email"] = info.email
-                biz["yelp"] = info.yelp
+                biz["email_confidence"] = info.email_confidence
                 biz["contact_methods_found"] = info.contact_methods_found
                 biz["best_contact_channel"] = info.best_contact_channel
-                biz["instagram_confidence"] = info.instagram_confidence
-                biz["facebook_confidence"] = info.facebook_confidence
-                biz["tiktok_confidence"] = info.tiktok_confidence
-                biz["email_confidence"] = info.email_confidence
 
         found_any = sum(1 for c in contacts.values() if c.contact_methods_found > 0)
         print(f"      Found contacts for {found_any}/{len(businesses)} businesses.")
