@@ -99,9 +99,15 @@ def _generate_for_business(biz: dict) -> dict | None:
         client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=800,
+            max_tokens=1500,
             messages=[{"role": "user", "content": prompt}],
         )
+
+        # Detect truncation before attempting JSON parse
+        if response.stop_reason == "max_tokens":
+            logger.warning("Response truncated for %s (hit max_tokens limit)",
+                           biz.get("business_name", "?"))
+            return None
 
         text = response.content[0].text.strip()
 

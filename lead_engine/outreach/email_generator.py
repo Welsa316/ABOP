@@ -113,7 +113,7 @@ def generate_draft(lead: dict) -> tuple[str, str, str]:
         client = anthropic.Anthropic(api_key=cfg.ANTHROPIC_API_KEY)
         response = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=500,
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
 
