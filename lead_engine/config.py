@@ -26,6 +26,10 @@ SCORE_WEIGHTS = {
     "very_high_reviews_bonus": 12,   # 500+ reviews
     "good_rating_bonus":        5,   # 4.5+ stars
     "excellent_rating_bonus":   8,   # 4.8+ stars
+
+    # --- Website audit signals ---
+    "no_contact_form":          5,   # website has no contact/booking form
+    "no_mobile_viewport":       5,   # website not mobile-responsive
 }
 
 # Review thresholds used by the scorer
@@ -49,6 +53,12 @@ MAX_CONCURRENT_REQUESTS = 10  # simultaneous website checks
 # ---------------------------------------------------------------------------
 MESSAGE_SCORE_THRESHOLD = 30   # min score for AI message generation
 ANTHROPIC_API_KEY = ""         # set via .env or at runtime
+
+# ---------------------------------------------------------------------------
+# Website audit settings
+# ---------------------------------------------------------------------------
+AUDIT_CONCURRENCY = 5            # concurrent Claude API calls for audits
+AUDIT_MODEL = "claude-haiku-4-5-20251001"  # cheaper model for website audits
 
 # ---------------------------------------------------------------------------
 # Pipeline flags

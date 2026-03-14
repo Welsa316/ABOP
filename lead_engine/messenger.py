@@ -53,6 +53,10 @@ def _build_prompt(biz: dict) -> str:
     if email:
         ctx.append(f"Contact email: {email}.")
 
+    audit = biz.get("website_audit", "")
+    if audit:
+        ctx.append(f"Website audit findings: {audit}")
+
     biz_context = " ".join(ctx)
 
     return f"""Generate outreach messages for {name}.

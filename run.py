@@ -41,6 +41,7 @@ from lead_engine.utils import setup_logging, save_json
 from lead_engine.loader import load_csv
 from lead_engine.analyzer import analyze_websites
 from lead_engine.contact_discovery import discover_all_contacts
+from lead_engine.auditor import audit_websites
 from lead_engine.scorer import score_all
 from lead_engine.messenger import generate_messages
 from lead_engine.writer import write_outputs, load_contacted
@@ -133,6 +134,8 @@ Examples:
                    help="Only process first N rows (0 = all)")
     p.add_argument("--no-analyze", action="store_true",
                    help="Skip website analysis (score based on metadata only)")
+    p.add_argument("--no-audit", action="store_true",
+                   help="Skip AI website content audit")
     p.add_argument("--no-contacts", action="store_true",
                    help="Skip contact discovery (social media / email search)")
     p.add_argument("--no-ai", action="store_true",
@@ -221,6 +224,24 @@ def main() -> None:
         sites_ok = sum(1 for a in analyses.values() if a.reachable)
         print(f"      {sites_ok} reachable / {len(analyses)} checked.")
     _save_progress(businesses, "analyzed")
+
+    # ------------------------------------------------------------------
+    # Stage 2b: Website content audit
+    # ------------------------------------------------------------------
+    if skip_analyze or args.no_audit:
+        reason = "--no-analyze" if skip_analyze else "--no-audit"
+        print(f"\n[2b] Skipping website content audit ({reason}).")
+    else:
+        # Prompt for key if missing (needed for audit AI calls)
+        _ensure_api_key()
+        if config.ANTHROPIC_API_KEY:
+            print("\n[2b] Auditing website content with AI ...")
+            asyncio.run(audit_websites(businesses, analyses))
+            audited = sum(1 for b in businesses if b.get("website_audit"))
+            print(f"      Audited {audited} websites.")
+        else:
+            print("\n[2b] No API key — skipping website audit.")
+    _save_progress(businesses, "audited")
 
     # ------------------------------------------------------------------
     # Stage 3: Contact discovery

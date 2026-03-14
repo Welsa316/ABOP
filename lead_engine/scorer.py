@@ -56,6 +56,12 @@ def score_business(biz: dict) -> int:
     elif rating >= RATING_THRESHOLDS["good"]:
         total += W.get("good_rating_bonus", 0)
 
+    # Website audit signals (set by auditor.py)
+    if biz.get("has_contact_form") is False and biz.get("website_status") == "listed":
+        total += W.get("no_contact_form", 0)
+    if biz.get("has_mobile_viewport") is False and biz.get("website_status") == "listed":
+        total += W.get("no_mobile_viewport", 0)
+
     return max(total, 0)
 
 
