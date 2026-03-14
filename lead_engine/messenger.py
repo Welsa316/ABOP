@@ -118,7 +118,15 @@ def _generate_for_business(biz: dict) -> dict | None:
             text = text.rsplit("```", 1)[0]
             text = text.strip()
 
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            # Claude occasionally wraps the response in a list
+            parsed = parsed[0] if parsed else {}
+        if not isinstance(parsed, dict):
+            logger.warning("Unexpected JSON type for %s: %s",
+                           biz.get("business_name", "?"), type(parsed).__name__)
+            return None
+        return parsed
 
     except json.JSONDecodeError as e:
         logger.warning("JSON parse error for %s: %s",
