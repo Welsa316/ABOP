@@ -90,7 +90,7 @@ def send_single(lead: dict, db, dry_run: bool = False) -> tuple[bool, str]:
 
     try:
         params = {
-            "from_": from_field,
+            "from": from_field,
             "to": [email],
             "subject": subject,
             "text": body_with_footer,
