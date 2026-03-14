@@ -47,6 +47,8 @@ def main():
         "--hidden-import", "idna",
         "--hidden-import", "charset_normalizer",
         "--hidden-import", "openpyxl",
+        "--hidden-import", "anthropic",
+        "--hidden-import", "bs4",
         "gui.py",
     ]
 

@@ -1,18 +1,19 @@
 """
-gui.py — Desktop GUI for the Lead Scoring Tool.
+gui.py — Desktop GUI for the Lead Engine Tool.
 
 Double-click this file (or run `python gui.py`) to launch the app.
 Uses tkinter (built into Python — no extra install needed).
 """
 
+import os
 import sys
 import threading
 import time
 import webbrowser
 from pathlib import Path
 from tkinter import (
-    Tk, ttk, StringVar, IntVar,
-    filedialog, messagebox, scrolledtext,
+    Tk, ttk, StringVar, IntVar, BooleanVar,
+    filedialog, messagebox, scrolledtext, simpledialog,
     W, EW, END, DISABLED, NORMAL, LEFT, BOTH, X, TOP,
 )
 
@@ -24,12 +25,25 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = Path(__file__).resolve().parent
 
+# Load .env file
+_env_path = BASE_DIR / ".env"
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_env_path)
+except ImportError:
+    pass
+
 import asyncio
+
+from lead_engine import config
+config.ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 from lead_engine.loader import load_csv
 from lead_engine.analyzer import analyze_websites
+from lead_engine.auditor import audit_websites
 from lead_engine.scorer import score_all
-from lead_engine.writer import write_outputs
+from lead_engine.messenger import generate_messages
+from lead_engine.writer import write_outputs, load_contacted
 from lead_engine.contact_discovery import discover_all_contacts
 
 # ---------------------------------------------------------------------------
@@ -50,9 +64,9 @@ class LeadEngineApp:
 
     def __init__(self) -> None:
         self.root = Tk()
-        self.root.title("Lead Engine — Business Lead Scorer")
-        self.root.geometry("920x620")
-        self.root.minsize(750, 450)
+        self.root.title("Lead Engine — Business Lead Scorer & Outreach")
+        self.root.geometry("920x680")
+        self.root.minsize(750, 500)
         self.root.configure(bg=BG)
 
         try:
@@ -64,6 +78,11 @@ class LeadEngineApp:
         self.csv_path = StringVar()
         self.output_dir = StringVar(value=str(BASE_DIR / "output"))
         self.row_limit = IntVar(value=0)
+        self.msg_limit = IntVar(value=0)
+        self.score_threshold = IntVar(value=config.MESSAGE_SCORE_THRESHOLD)
+        self.skip_audit = BooleanVar(value=False)
+        self.skip_contacts = BooleanVar(value=False)
+        self.skip_ai = BooleanVar(value=False)
         self.running = False
 
         self._build_ui()
@@ -79,7 +98,7 @@ class LeadEngineApp:
         header = ttk.Frame(root, style="Header.TFrame")
         header.pack(fill=X, padx=20, pady=(18, 8))
         ttk.Label(header, text="Lead Engine", style="Title.TLabel").pack(side=LEFT)
-        ttk.Label(header, text="Score & categorize business leads",
+        ttk.Label(header, text="Score, audit & generate outreach",
                   style="Subtitle.TLabel").pack(side=LEFT, padx=(14, 0))
 
         # ---- Main content ----
@@ -117,6 +136,7 @@ class LeadEngineApp:
         grid = ttk.Frame(row2, style="Card.TFrame")
         grid.pack(fill=X, padx=12, pady=10)
 
+        # Row 0: Row Limit
         ttk.Label(grid, text="Row Limit:", style="Label.TLabel").grid(
             row=0, column=0, sticky=W, padx=(0, 8), pady=3)
         ttk.Spinbox(grid, from_=0, to=99999, textvariable=self.row_limit,
@@ -124,6 +144,39 @@ class LeadEngineApp:
             row=0, column=1, sticky=W, pady=3)
         ttk.Label(grid, text="(0 = all rows)", style="Dim.TLabel").grid(
             row=0, column=2, sticky=W, padx=(6, 0), pady=3)
+
+        # Row 1: Message Limit
+        ttk.Label(grid, text="Message Limit:", style="Label.TLabel").grid(
+            row=1, column=0, sticky=W, padx=(0, 8), pady=3)
+        ttk.Spinbox(grid, from_=0, to=9999, textvariable=self.msg_limit,
+                     width=10, style="Input.TSpinbox").grid(
+            row=1, column=1, sticky=W, pady=3)
+        ttk.Label(grid, text="(0 = unlimited)", style="Dim.TLabel").grid(
+            row=1, column=2, sticky=W, padx=(6, 0), pady=3)
+
+        # Row 2: Score Threshold
+        ttk.Label(grid, text="Score Threshold:", style="Label.TLabel").grid(
+            row=2, column=0, sticky=W, padx=(0, 8), pady=3)
+        ttk.Spinbox(grid, from_=0, to=100, textvariable=self.score_threshold,
+                     width=10, style="Input.TSpinbox").grid(
+            row=2, column=1, sticky=W, pady=3)
+        ttk.Label(grid, text="(min score for messages)", style="Dim.TLabel").grid(
+            row=2, column=2, sticky=W, padx=(6, 0), pady=3)
+
+        # Row 3: Checkboxes
+        cb_frame = ttk.Frame(grid, style="Card.TFrame")
+        cb_frame.grid(row=3, column=0, columnspan=4, sticky=W, pady=(6, 0))
+
+        ttk.Checkbutton(cb_frame, text="Skip Website Audit",
+                        variable=self.skip_audit, style="Card.TCheckbutton").pack(
+            side=LEFT, padx=(0, 16))
+        ttk.Checkbutton(cb_frame, text="Skip Contact Discovery",
+                        variable=self.skip_contacts, style="Card.TCheckbutton").pack(
+            side=LEFT, padx=(0, 16))
+        ttk.Checkbutton(cb_frame, text="Skip AI Messages",
+                        variable=self.skip_ai, style="Card.TCheckbutton").pack(
+            side=LEFT, padx=(0, 16))
+
         grid.columnconfigure(1, weight=1)
 
         # -- Run button --
@@ -187,6 +240,10 @@ class LeadEngineApp:
                      darkcolor=BORDER)
         s.configure("Input.TSpinbox", fieldbackground=BG, foreground=FG,
                      insertcolor=FG, bordercolor=BORDER, arrowcolor=FG_DIM)
+
+        s.configure("Card.TCheckbutton", background=BG_CARD, foreground=FG,
+                     font=("Segoe UI", 9))
+        s.map("Card.TCheckbutton", background=[("active", BG_CARD)])
 
         s.configure("Accent.TButton", background=ACCENT, foreground="#ffffff",
                      font=("Segoe UI", 9, "bold"), borderwidth=0, padding=(10, 4))
@@ -253,6 +310,57 @@ class LeadEngineApp:
         self.root.after(0, _update)
 
     # ------------------------------------------------------------------
+    # API key handling
+    # ------------------------------------------------------------------
+    def _ensure_api_key(self) -> bool:
+        """Check for API key; prompt via dialog if missing. Returns True if key is available."""
+        if config.ANTHROPIC_API_KEY:
+            return True
+
+        # Ask user for key via dialog (must run on main thread)
+        result = [None]
+        event = threading.Event()
+
+        def _ask():
+            key = simpledialog.askstring(
+                "API Key Required",
+                "Enter your Anthropic API key:\n"
+                "(get one at console.anthropic.com/settings/keys)\n\n"
+                "Leave blank to skip AI features this run.",
+                parent=self.root,
+            )
+            result[0] = key
+            event.set()
+
+        self.root.after(0, _ask)
+        event.wait()
+
+        key = (result[0] or "").strip()
+        if not key:
+            return False
+
+        # Save to config and .env
+        config.ANTHROPIC_API_KEY = key
+        os.environ["ANTHROPIC_API_KEY"] = key
+
+        env_lines = []
+        if _env_path.exists():
+            env_lines = _env_path.read_text(encoding="utf-8").splitlines()
+
+        found = False
+        for i, line in enumerate(env_lines):
+            if line.strip().startswith("ANTHROPIC_API_KEY"):
+                env_lines[i] = f"ANTHROPIC_API_KEY={key}"
+                found = True
+                break
+        if not found:
+            env_lines.append(f"ANTHROPIC_API_KEY={key}")
+
+        _env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
+        self._log(f"      API key saved to {_env_path}")
+        return True
+
+    # ------------------------------------------------------------------
     # Pipeline (runs in background thread)
     # ------------------------------------------------------------------
     def _on_run(self) -> None:
@@ -278,59 +386,124 @@ class LeadEngineApp:
             csv_path = self.csv_path.get().strip()
             output_dir = self.output_dir.get().strip() or str(BASE_DIR / "output")
             limit = self.row_limit.get()
+            msg_limit = self.msg_limit.get()
+            score_thresh = self.score_threshold.get()
+            do_audit = not self.skip_audit.get()
+            do_contacts = not self.skip_contacts.get()
+            do_ai = not self.skip_ai.get()
 
             t_start = time.time()
 
             # ---- Stage 1: Load CSV ----
-            self._set_progress(10, "Loading CSV ...")
-            self._log("[1/5] Loading CSV ...")
+            self._set_progress(5, "Loading CSV ...")
+            self._log("[1/6] Loading CSV ...")
             businesses = load_csv(csv_path)
             if limit:
                 businesses = businesses[:limit]
             self._log(f"      Loaded {len(businesses)} businesses.")
 
             no_listed = sum(1 for b in businesses if not b.get("website"))
-            self._log(f"      {no_listed} without listed website — will attempt discovery.")
-            self._set_progress(15)
+            self._log(f"      {no_listed} without listed website.")
+            self._set_progress(10)
 
             # ---- Stage 2: Website discovery & analysis ----
-            self._set_progress(20, "Discovering websites ...")
-            self._log("[2/5] Analysing & discovering websites ...")
+            self._set_progress(12, "Analysing websites ...")
+            self._log("[2/6] Analysing & discovering websites ...")
             analyses = asyncio.run(analyze_websites(businesses))
             listed = sum(1 for a in analyses.values() if a.website_status == "listed")
             discovered = sum(1 for a in analyses.values() if a.website_status == "discovered")
             not_found = sum(1 for a in analyses.values() if a.website_status == "not_found")
             self._log(f"      {listed} listed, {discovered} discovered, {not_found} not found.")
+            self._set_progress(25)
+
+            # ---- Stage 2b: Website content audit ----
+            if do_audit:
+                has_key = config.ANTHROPIC_API_KEY or self._ensure_api_key()
+                if has_key:
+                    self._set_progress(28, "Auditing website content ...")
+                    self._log("[2b] Auditing website content with AI ...")
+                    asyncio.run(audit_websites(businesses, analyses))
+                    audited = sum(1 for b in businesses if b.get("website_audit"))
+                    self._log(f"      Audited {audited} websites.")
+                else:
+                    self._log("[2b] Skipping website audit (no API key).")
+            else:
+                self._log("[2b] Skipping website audit.")
             self._set_progress(35)
 
-            # ---- Stage 3: Discover emails ----
-            self._set_progress(40, "Discovering emails ...")
-            self._log("[3/5] Discovering contact emails ...")
-            self._log("      Searching websites & DuckDuckGo (may take a minute) ...")
-            contacts = discover_all_contacts(businesses)
-            for i, biz in enumerate(businesses):
-                info = contacts.get(i)
-                if info:
-                    biz["email"] = info.email
-                    biz["email_confidence"] = info.email_confidence
-            emails_found = sum(1 for c in contacts.values() if c.email)
-            self._log(f"      Found emails for {emails_found}/{len(businesses)} businesses.")
+            # ---- Stage 3: Discover contacts ----
+            if do_contacts:
+                self._set_progress(38, "Discovering contacts ...")
+                self._log("[3/6] Discovering contact emails ...")
+                self._log("      Searching websites & DuckDuckGo (may take a minute) ...")
+                contacts = discover_all_contacts(businesses)
+                for i, biz in enumerate(businesses):
+                    info = contacts.get(i)
+                    if info:
+                        biz["email"] = info.email
+                        biz["email_confidence"] = info.email_confidence
+                        biz["contact_methods_found"] = info.contact_methods_found
+                        biz["best_contact_channel"] = info.best_contact_channel
+                emails_found = sum(1 for c in contacts.values() if c.email)
+                self._log(f"      Found emails for {emails_found}/{len(businesses)} businesses.")
+            else:
+                self._log("[3/6] Skipping contact discovery.")
             self._set_progress(55)
 
             # ---- Stage 4: Score ----
-            self._set_progress(60, "Scoring leads ...")
-            self._log("[4/5] Scoring leads ...")
+            self._set_progress(58, "Scoring leads ...")
+            self._log("[4/6] Scoring leads ...")
             businesses = score_all(businesses, analyses)
 
             if businesses:
                 top = businesses[0]
                 self._log(f"      Top lead: {top.get('business_name', '?')} "
                           f"(score={top.get('lead_score', 0)})")
-            self._set_progress(75)
+            self._set_progress(65)
 
-            # ---- Stage 5: Write Excel ----
-            self._set_progress(80, "Writing Excel ...")
-            self._log("[5/5] Writing Excel tracker ...")
+            # ---- Stage 5: AI message generation ----
+            if do_ai:
+                has_key = config.ANTHROPIC_API_KEY or self._ensure_api_key()
+                if has_key:
+                    self._set_progress(68, "Generating outreach messages ...")
+                    self._log("[5/6] Generating outreach messages with Claude ...")
+
+                    contacted = load_contacted(output_dir)
+                    if contacted:
+                        self._log(f"      Skipping {len(contacted)} previously contacted businesses.")
+
+                    limit_text = str(msg_limit) if msg_limit else "unlimited"
+                    self._log(f"      Message limit: {limit_text}, score threshold: {score_thresh}")
+
+                    businesses = generate_messages(
+                        businesses,
+                        score_threshold=score_thresh,
+                        max_messages=msg_limit,
+                        contacted_keys=contacted,
+                    )
+
+                    messaged = sum(1 for b in businesses
+                                   if b.get("email_subject") and not b.get("message_error"))
+                    self._log(f"      Generated messages for {messaged} businesses.")
+                else:
+                    self._log("[5/6] Skipping AI messages (no API key).")
+                    for biz in businesses:
+                        for field in ("email_subject", "email_message", "contact_form_message",
+                                      "dm_message", "follow_up_message", "call_script"):
+                            biz[field] = ""
+                        biz["message_error"] = "api_key_missing"
+            else:
+                self._log("[5/6] Skipping AI messages.")
+                for biz in businesses:
+                    for field in ("email_subject", "email_message", "contact_form_message",
+                                  "dm_message", "follow_up_message", "call_script"):
+                        biz[field] = ""
+                    biz["message_error"] = "skipped"
+            self._set_progress(85)
+
+            # ---- Stage 6: Write outputs ----
+            self._set_progress(88, "Writing output files ...")
+            self._log("[6/6] Writing output files ...")
             files = write_outputs(businesses, output_dir)
             for label, path in files.items():
                 self._log(f"      {label} -> {path}")
@@ -343,15 +516,21 @@ class LeadEngineApp:
             self._log(f"  {listed} with listed website")
             self._log(f"  {discovered} with discovered website (not on Google)")
             self._log(f"  {not_found} no website found (highest priority)")
-            self._log(f"  {emails_found} with email found")
+
+            if do_ai and config.ANTHROPIC_API_KEY:
+                messaged = sum(1 for b in businesses
+                               if b.get("email_subject") and not b.get("message_error"))
+                self._log(f"  {messaged} with outreach messages generated")
+
             self._log(f"\nTop 5:")
             for b in businesses[:5]:
                 status = b.get("website_status", "not_found")
                 tag = {"discovered": " [UNLISTED SITE]",
                        "not_found": " [NO SITE FOUND]"}.get(status, "")
                 email_tag = f" [{b.get('email', '')}]" if b.get("email") else ""
+                msg_tag = " [MSG]" if b.get("email_subject") else ""
                 self._log(f"  [{b.get('lead_score', 0):>3} pts]  "
-                          f"{b.get('business_name', '?')}{tag}{email_tag}")
+                          f"{b.get('business_name', '?')}{tag}{email_tag}{msg_tag}")
 
         except Exception as exc:
             self._log(f"\nERROR: {exc}")
