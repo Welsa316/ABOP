@@ -74,8 +74,8 @@ class LeadEngineApp:
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Lead Engine — Business Lead Scorer & Outreach")
-        self.root.geometry("920x680")
-        self.root.minsize(750, 500)
+        self.root.geometry("920x820")
+        self.root.minsize(750, 650)
         self.root.configure(bg=BG)
 
         try:
