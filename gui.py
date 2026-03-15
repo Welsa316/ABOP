@@ -74,8 +74,8 @@ class LeadEngineApp:
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("Lead Engine — Business Lead Scorer & Outreach")
-        self.root.geometry("920x820")
-        self.root.minsize(750, 650)
+        self.root.geometry("920x680")
+        self.root.minsize(750, 500)
         self.root.configure(bg=BG)
 
         try:
@@ -203,12 +203,20 @@ class LeadEngineApp:
 
         grid.columnconfigure(1, weight=1)
 
-        # -- Outreach settings (collapsible) --
-        row3 = ttk.LabelFrame(body, text="  Email Outreach Settings  ",
-                               style="Card.TLabelframe")
-        row3.pack(fill=X, pady=(0, 10))
+        # -- Outreach settings (collapsed by default — loaded from .env) --
+        outreach_header = ttk.Frame(body, style="Body.TFrame")
+        outreach_header.pack(fill=X, pady=(0, 2))
+        self._outreach_visible = False
+        self._outreach_toggle_btn = ttk.Button(
+            outreach_header, text="+ Email Outreach Settings  (loaded from .env)",
+            command=self._toggle_outreach, style="Accent.TButton")
+        self._outreach_toggle_btn.pack(side=LEFT)
 
-        og = ttk.Frame(row3, style="Card.TFrame")
+        self._outreach_frame = ttk.LabelFrame(body, text="  Email Outreach Settings  ",
+                                               style="Card.TLabelframe")
+        # Don't pack yet — starts collapsed
+
+        og = ttk.Frame(self._outreach_frame, style="Card.TFrame")
         og.pack(fill=X, padx=12, pady=10)
 
         # Provider selector
@@ -363,6 +371,21 @@ class LeadEngineApp:
         )
         if path:
             self.output_dir.set(path)
+
+    def _toggle_outreach(self) -> None:
+        """Show/hide the outreach settings panel."""
+        if self._outreach_visible:
+            self._outreach_frame.pack_forget()
+            self._outreach_toggle_btn.configure(
+                text="+ Email Outreach Settings  (loaded from .env)")
+            self._outreach_visible = False
+        else:
+            # Pack it right after the toggle button's parent
+            self._outreach_frame.pack(fill=X, pady=(0, 10),
+                                       after=self._outreach_toggle_btn.master)
+            self._outreach_toggle_btn.configure(
+                text="- Email Outreach Settings  (hide)")
+            self._outreach_visible = True
 
     def _open_output(self) -> None:
         out = Path(self.output_dir.get())
