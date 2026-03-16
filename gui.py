@@ -12,9 +12,10 @@ import time
 import webbrowser
 from pathlib import Path
 from tkinter import (
-    Tk, ttk, StringVar, IntVar, BooleanVar,
+    Tk, Toplevel, ttk, StringVar, IntVar, BooleanVar,
     filedialog, messagebox, scrolledtext, simpledialog,
-    W, EW, END, DISABLED, NORMAL, LEFT, BOTH, X, TOP,
+    W, E, EW, END, DISABLED, NORMAL, LEFT, RIGHT, BOTH, X, Y, TOP, BOTTOM,
+    Canvas, Frame,
 )
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,9 @@ from lead_engine.contact_discovery import discover_all_contacts
 from lead_engine.outreach import outreach_config as outreach_cfg
 from lead_engine.outreach.campaign import (
     run_ingest_pipeline,
+    get_leads_needing_review,
+    approve_lead,
+    reject_lead,
     approve_all_reviewed,
     send_approved,
     get_campaign_stats,
@@ -66,6 +70,194 @@ ACCENT      = "#7c6ff7"
 ACCENT_HOV  = "#9580ff"
 SUCCESS     = "#50fa7b"
 BORDER      = "#3a3a5c"
+DANGER      = "#ff5555"
+
+
+# ---------------------------------------------------------------------------
+# Message Review / Approval Dialog
+# ---------------------------------------------------------------------------
+class ReviewDialog(Toplevel):
+    """
+    Modal dialog that displays generated email drafts for review.
+    User can approve or reject each lead before sending.
+    Returns list of approved lead emails.
+    """
+
+    def __init__(self, parent, leads: list[dict]):
+        super().__init__(parent)
+        self.title("Review Email Drafts")
+        self.configure(bg=BG)
+        self.geometry("820x620")
+        self.minsize(700, 400)
+        self.transient(parent)
+        self.grab_set()
+
+        self.leads = leads
+        self.approved_emails: list[str] = []
+        self._check_vars: dict[str, BooleanVar] = {}
+
+        self._build_ui()
+        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+        py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{max(0, px)}+{max(0, py)}")
+
+    def _build_ui(self):
+        # Header
+        hdr = Frame(self, bg=BG)
+        hdr.pack(fill=X, padx=16, pady=(12, 4))
+        ttk.Label(hdr, text=f"{len(self.leads)} email drafts ready for review",
+                  font=("Segoe UI", 12, "bold"), background=BG, foreground=FG).pack(side=LEFT)
+
+        # Select all / none buttons
+        sel_frame = Frame(self, bg=BG)
+        sel_frame.pack(fill=X, padx=16, pady=(0, 6))
+        ttk.Button(sel_frame, text="Select All", command=self._select_all,
+                   style="Accent.TButton").pack(side=LEFT, padx=(0, 8))
+        ttk.Button(sel_frame, text="Deselect All", command=self._deselect_all,
+                   style="Accent.TButton").pack(side=LEFT)
+
+        # Scrollable list of leads
+        container = Frame(self, bg=BG)
+        container.pack(fill=BOTH, expand=True, padx=16, pady=(0, 8))
+
+        canvas = Canvas(container, bg=BG, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        self._scroll_frame = Frame(canvas, bg=BG)
+
+        self._scroll_frame.bind(
+            "<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self._scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar.pack(side=RIGHT, fill=Y)
+
+        # Bind mouse wheel
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        # Linux scroll
+        canvas.bind_all("<Button-4>", lambda e: canvas.yview_scroll(-3, "units"))
+        canvas.bind_all("<Button-5>", lambda e: canvas.yview_scroll(3, "units"))
+
+        for i, lead in enumerate(self.leads):
+            self._add_lead_card(i, lead)
+
+        # Footer buttons
+        footer = Frame(self, bg=BG)
+        footer.pack(fill=X, padx=16, pady=(0, 12))
+        self._approve_btn = ttk.Button(
+            footer, text="  Approve Selected & Send  ",
+            command=self._on_approve, style="Run.TButton")
+        self._approve_btn.pack(side=RIGHT, padx=(8, 0))
+        ttk.Button(footer, text="  Cancel  ",
+                   command=self._on_cancel, style="Stop.TButton").pack(side=RIGHT)
+        self._count_label = ttk.Label(
+            footer, text="", background=BG, foreground=FG_DIM,
+            font=("Segoe UI", 9))
+        self._count_label.pack(side=LEFT)
+        self._update_count()
+
+    def _add_lead_card(self, idx: int, lead: dict):
+        card = Frame(self._scroll_frame, bg=BG_CARD, highlightbackground=BORDER,
+                     highlightthickness=1)
+        card.pack(fill=X, pady=(0, 6), padx=2)
+
+        # Top row: checkbox + business name + email
+        top = Frame(card, bg=BG_CARD)
+        top.pack(fill=X, padx=10, pady=(8, 2))
+
+        var = BooleanVar(value=True)
+        self._check_vars[lead["email"]] = var
+        cb = ttk.Checkbutton(top, variable=var, command=self._update_count,
+                             style="Card.TCheckbutton")
+        cb.pack(side=LEFT, padx=(0, 8))
+
+        biz = lead.get("business_name", "Unknown")
+        email = lead.get("email", "")
+        score = lead.get("lead_score", 0)
+        ttk.Label(top, text=f"{biz}", font=("Segoe UI", 10, "bold"),
+                  background=BG_CARD, foreground=FG).pack(side=LEFT, padx=(0, 10))
+        ttk.Label(top, text=f"<{email}>", background=BG_CARD,
+                  foreground=FG_DIM, font=("Consolas", 9)).pack(side=LEFT, padx=(0, 10))
+        ttk.Label(top, text=f"Score: {score}", background=BG_CARD,
+                  foreground=ACCENT, font=("Segoe UI", 9, "bold")).pack(side=LEFT)
+
+        # Subject line
+        subj = lead.get("subject_line", "(no subject)")
+        subj_frame = Frame(card, bg=BG_CARD)
+        subj_frame.pack(fill=X, padx=10, pady=(2, 2))
+        ttk.Label(subj_frame, text="Subject:", background=BG_CARD,
+                  foreground=FG_DIM, font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(0, 6))
+        ttk.Label(subj_frame, text=subj, background=BG_CARD,
+                  foreground=FG, font=("Segoe UI", 9), wraplength=650).pack(side=LEFT)
+
+        # Collapsible body preview
+        body_var = BooleanVar(value=False)
+        toggle_btn = ttk.Button(
+            card, text="Show message body",
+            command=lambda bv=body_var, c=card, l=lead: self._toggle_body(bv, c, l),
+            style="Accent.TButton")
+        toggle_btn.pack(anchor=W, padx=10, pady=(2, 6))
+
+    def _toggle_body(self, var: BooleanVar, card: Frame, lead: dict):
+        tag = f"_body_{lead['email']}"
+        if var.get():
+            # Hide
+            var.set(False)
+            for child in card.winfo_children():
+                if getattr(child, "_body_tag", None) == tag:
+                    child.destroy()
+            # Update toggle button text
+            for child in card.winfo_children():
+                if isinstance(child, ttk.Button) and "body" in str(child.cget("text")).lower():
+                    child.configure(text="Show message body")
+        else:
+            # Show
+            var.set(True)
+            body_text = lead.get("email_body", "(no body)")
+            body_widget = scrolledtext.ScrolledText(
+                card, height=8, wrap="word", bg="#1a1a2e", fg=FG,
+                font=("Consolas", 9), relief="flat", borderwidth=1,
+                insertbackground=FG, selectbackground=ACCENT, selectforeground="#ffffff")
+            body_widget._body_tag = tag
+            body_widget.pack(fill=X, padx=10, pady=(0, 8))
+            body_widget.insert("1.0", body_text)
+            body_widget.configure(state=DISABLED)
+            # Update toggle button text
+            for child in card.winfo_children():
+                if isinstance(child, ttk.Button) and "body" in str(child.cget("text")).lower():
+                    child.configure(text="Hide message body")
+
+    def _select_all(self):
+        for var in self._check_vars.values():
+            var.set(True)
+        self._update_count()
+
+    def _deselect_all(self):
+        for var in self._check_vars.values():
+            var.set(False)
+        self._update_count()
+
+    def _update_count(self):
+        count = sum(1 for v in self._check_vars.values() if v.get())
+        total = len(self._check_vars)
+        self._count_label.configure(text=f"{count} of {total} selected")
+        state = NORMAL if count > 0 else DISABLED
+        self._approve_btn.configure(state=state)
+
+    def _on_approve(self):
+        self.approved_emails = [
+            email for email, var in self._check_vars.items() if var.get()
+        ]
+        self.destroy()
+
+    def _on_cancel(self):
+        self.approved_emails = []
+        self.destroy()
 
 
 class LeadEngineApp:
@@ -581,7 +773,7 @@ class LeadEngineApp:
             # Step 1: Ingest leads from Excel into outreach DB
             self._set_progress(10, "Ingesting leads ...")
             self._log("\n=== Email Outreach ===")
-            self._log("[1/4] Ingesting leads from Excel ...")
+            self._log("[1/3] Ingesting leads from Excel ...")
             summary = run_ingest_pipeline(excel_path)
             self._log(f"      New leads imported: {summary['ingested']}")
             self._log(f"      Duplicates skipped: {summary['skipped_duplicates']}")
@@ -590,17 +782,58 @@ class LeadEngineApp:
                 self._log(f"      Draft errors:       {summary['draft_errors']}")
             self._set_progress(40)
 
-            # Step 2: Auto-approve all reviewed leads
-            self._set_progress(50, "Approving leads ...")
-            self._log("[2/4] Auto-approving leads ...")
-            approved_count = approve_all_reviewed()
-            self._log(f"      Approved {approved_count} leads.")
-            self._set_progress(60)
+            # Step 2: Show review dialog for approval
+            self._set_progress(50, "Waiting for review ...")
+            self._log("[2/3] Waiting for you to review drafts ...")
+            leads_to_review = get_leads_needing_review()
 
-            # Step 3: Show stats before sending
+            if not leads_to_review:
+                # Also check already-approved leads
+                stats = get_campaign_stats()
+                already_approved = stats.get("approved", 0)
+                if already_approved > 0:
+                    self._log(f"      {already_approved} already-approved leads found.")
+                else:
+                    self._log("      No drafts to review or send.")
+                    self._set_progress(100, "No emails to send")
+                    return
+            else:
+                # Show review dialog on the main thread and wait for result
+                approved_emails = []
+                review_done = threading.Event()
+
+                def _show_review():
+                    dlg = ReviewDialog(self.root, leads_to_review)
+                    self.root.wait_window(dlg)
+                    approved_emails.extend(dlg.approved_emails)
+                    review_done.set()
+
+                self.root.after(0, _show_review)
+                review_done.wait()
+
+                if not approved_emails:
+                    self._log("      Review cancelled — no emails approved.")
+                    self._set_progress(100, "Send cancelled")
+                    return
+
+                # Approve selected, reject the rest
+                approved_set = set(approved_emails)
+                approved_count = 0
+                rejected_count = 0
+                for lead in leads_to_review:
+                    if lead["email"] in approved_set:
+                        approve_lead(lead["email"])
+                        approved_count += 1
+                    else:
+                        reject_lead(lead["email"])
+                        rejected_count += 1
+
+                self._log(f"      Approved: {approved_count}  |  Rejected: {rejected_count}")
+
+            # Step 3: Send approved
             stats = get_campaign_stats()
             sendable = stats.get("approved", 0)
-            self._log(f"[3/4] Ready to send {sendable} emails")
+            self._log(f"[3/3] Sending {sendable} emails ...")
             self._log(f"      From: {outreach_cfg.FROM_NAME} <{outreach_cfg.FROM_EMAIL}>")
             self._log(f"      Daily cap: {outreach_cfg.DAILY_SEND_CAP}")
 
@@ -609,9 +842,7 @@ class LeadEngineApp:
                 self._set_progress(100, "No emails to send")
                 return
 
-            # Step 4: Send
             self._set_progress(70, f"Sending {sendable} emails ...")
-            self._log(f"[4/4] Sending emails ...")
             sent, failed, skipped = send_approved(dry_run=False)
 
             self._set_progress(100, "Outreach complete!")

@@ -197,6 +197,15 @@ def reject_lead(email: str, notes: str = ""):
         db.close()
 
 
+def get_leads_needing_review() -> list[dict]:
+    """Get leads with generated drafts that need human review."""
+    db = OutreachDB()
+    try:
+        return db.get_leads_needing_review()
+    finally:
+        db.close()
+
+
 def approve_all_reviewed():
     """Approve all leads currently in Reviewed status."""
     db = OutreachDB()
